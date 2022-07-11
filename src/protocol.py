@@ -1,20 +1,27 @@
 import json #For JSON serialization
 import socket #For creating websockets
+import struct
+import zlib #For checksum
 
 #Base message. Other messages should extend this
 class Message:
+    type = ""
     #Serializes to JSON (can be overriden)
     def encode(self):
         return json.dumps(self, default=lambda o: o.__dict__, sort_keys=False)
 
     #Static method for parsing a JSON dict to a message
     @classmethod
-    def decode(cls, JSON : dict):
+    def decode(cls, msg : dict):
         try:
-            type = JSON["type"]
+
+            type = json.loads(msg)["type"]
 
             if type == "HELLO":
                 return HelloMessage()
+
+            if type == "KEEPALIVE":
+                return KeepAliveMessage()
 
         except:
             raise ValueError("Could not parse JSON to message.")
@@ -28,6 +35,14 @@ class HelloMessage(Message):
     def __str__(self) -> str:
         return "Hello, I'm ready for work."
 
+#Keep alive message. Used for knowing when a worker dies
+class KeepAliveMessage(Message):
+    def __init__(self):
+        self.type = "KEEPALIVE"
+
+    def __str__(self) -> str:
+        return "Keeping alive..."
+
 #The protocols for sending text messages and images
 class Protocol:
 
@@ -40,30 +55,17 @@ class Protocol:
 
         #Construct the message with a header
         byte_msg = str.encode(msg.encode())
-        header = len(byte_msg)
-        msg = header.to_bytes(cls.HEADER_BYTES, byteorder='big') + byte_msg
+        checksum = cls.calculate_checksum(byte_msg)
 
-        #Keeps sending until all bytes were send
-
-        while header > 0:
-            header -= sock.sendto(msg, addr)
-        pass
+        sock.sendto(byte_msg,addr)
     
+    @classmethod
+    def calculate_checksum(cls, data) -> int:
+        return zlib.crc32(data)
+
     #Receives a message
     @classmethod
-    def receive(cls,sock : socket) -> str:
-        try:
-            byte_msg = b''
-            total_bytes = int.from_bytes(sock.recvfrom(cls.HEADER_BYTES)[0], byteorder='big')
-            while len(byte_msg) < total_bytes:
-                byte_msg += sock.recvfrom(total_bytes - len(byte_msg))[0]
-                print(byte_msg)
-
-            json_msg = json.loads(byte_msg.decode("UTF-8"))
-
-            return Message.decode(json_msg)
-        except Exception as e:
-            #Either a bad message was received or the socket connection ended abruptly.
-            print("BAD MESSAGE")
-            pass
+    def receive(cls,sock : socket):
+        data, client_address = sock.recvfrom(1024)
+        return (Message.decode(data.decode('utf-8')), client_address)
     pass

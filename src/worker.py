@@ -1,10 +1,11 @@
 import socket #For creating websockets
+from PIL import Image #For processing images
+import threading #For parallelism
 
 #For sending and receiving messages
-from .protocol import Protocol, HelloMessage
+from .protocol import *
 
 class Worker:
-
 
     #Whether the worker is running or not. Turned off by the broker
     running = True
@@ -31,5 +32,31 @@ class Worker:
     def run(self):
 
         #Wait for commands from the broker
-        while self.running:
-            pass
+        try:
+            while self.running:
+
+                #Gets message from worker
+                message, worker_address = Protocol.receive(self.sock)
+
+                #Creates a thread for the worker
+                worker_thread = threading.Thread(target = self.handle_message, args = (message,))
+                worker_thread.daemon = True
+                worker_thread.start()
+            
+        #Shutdown the broker if the user interrupts the proccess
+        except KeyboardInterrupt:
+            self.poweroff()
+
+    #Decides what to do with the message received
+    def handle_message(self, msg : Message):
+        if msg.type == "KEEPALIVE":
+            self.handle_keep_alive(msg)
+
+    #Simply sends the message back so that the broker knows this is alive
+    def handle_keep_alive(self, msg : KeepAliveMessage):
+        Protocol.send(self.sock, self.broker_sock, msg)
+
+    #Shutdown the worker
+    def poweroff(self):
+        self.running = False
+        self.sock.close()

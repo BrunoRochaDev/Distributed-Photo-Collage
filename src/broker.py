@@ -1,12 +1,14 @@
 import os #For managing files
 import errno #For error handling
-import time #For calculating elapsed time
-from PIL import Image #For processing images
-import base64 #For encoding images
+
 import socket #For creating websockets
+import threading #For parallelism
+import time #For calculating elapsed time
+
+import base64 #For encoding images
 
 #For sending and receiving messages
-from .protocol import Protocol
+from .protocol import KeepAliveMessage, Message, Protocol
 
 #Wrapper class for holding image data for ease of access
 class ImageWrapper:
@@ -20,7 +22,7 @@ class ImageWrapper:
 
     #Static method for creating a wrapper object from a single image
     @classmethod
-    def Create(cls, name : str, path : str):
+    def create(cls, name : str, path : str):
 
         #The object to be created
         img = ImageWrapper()
@@ -43,11 +45,32 @@ class ImageWrapper:
         neighbour.neighbour = self
     pass
 
+class WorkerInfo:
+    
+    #Properties
+    addr = None
+    state = "IDLE"
+    missed_keep_alives = 0
+
+    #Creates the worker
+    def __init__(self, addr) -> None:
+        self.addr = addr
+    
+    #Tags a dead worker as alive again
+    def resurrect(self):
+        self.state = "IDLE"
+        self.missed_keep_alives = 0
+    pass
+
 #Actual implementation of the Broker object
 class Broker:
 
     #Whether the broker is running or not. When every job is done, the broker turns itself off.
     running = True
+
+    #Keep alive stats
+    KEEP_ALIVE_DELAY = 1
+    KEEP_ALIVE_TOLERANCE = 6
 
     #region STATISTICS
 
@@ -61,9 +84,8 @@ class Broker:
 
     #endregion
 
-    #List of every worker who was sent some task (still counts even if it wasn't completed)
-    #The list holds another list inside, the very element being the worker's ID, the second the list of tasks it has performed and the the third is whether it's currently free
-    workers_operations = []
+    #List of every worker (and info about them)
+    workers = {}
 
     #Only constructor. Takes two arguments:
     #   1. The path to the images folder
@@ -101,7 +123,7 @@ class Broker:
             #Ignore non-image files (support only .jpg for now)
             if os.path.isfile(f) and filename.split('.')[-1] in ['jpg', 'jpeg']:
                 #Creates the image and stores it the dictionary
-                images.append(ImageWrapper.Create(filename, f))
+                images.append(ImageWrapper.create(filename, f))
 
         #Sorts lists by date of last modification and sets neighbours
         images.sort(key=lambda x: x.modified_time, reverse=True)
@@ -118,7 +140,6 @@ class Broker:
     #endregion
 
     def start_server(self):
-
         #Creates the brokers's server (UDP)
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 
@@ -130,13 +151,68 @@ class Broker:
 
         print(f"Started server at port {1024}.")
 
-    #Continuously receive messages 
+    #Serve clients countinously
     def run(self):
 
-        while self.running:
-            message = Protocol.receive(self.sock)
+        #Creates a thread for sending keep alive messages
+        keep_alive_thread = threading.Thread(target = self.send_keep_alive)
+        keep_alive_thread.daemon = True
+        keep_alive_thread.start()
 
-            clientMsg = "Message from Client:{}".format(message)
+        #Keeps servicing requests until the broker is shut off
+        try:
+            while self.running:
+
+                #Gets message from worker
+                message, worker_address = Protocol.receive(self.sock)
+
+                #Creates a thread for the worker
+                worker_thread = threading.Thread(target = self.handle_message, args = (message, worker_address))
+                worker_thread.daemon = True
+                worker_thread.start()
             
-            print(clientMsg)
-            pass
+        #Shutdown the broker if the user interrupts the proccess
+        except KeyboardInterrupt:
+            self.poweroff()
+
+    #Sends keep alive messages to every worker periodically. Also deletes workers who are potentially dead
+    def send_keep_alive(self):
+        while self.running:
+
+            #Evaluate every worker
+            for worker in self.workers.values():
+                worker.missed_keep_alives += 1 #Increment the missed count
+
+                #If missed too many messages, probably dead. Delete it
+                if worker.state != "DEAD" and worker.missed_keep_alives >= self.KEEP_ALIVE_TOLERANCE:
+                    print(f"{worker.addr} is dead.")
+                    worker.state = "DEAD"
+                else:
+                    Protocol.send(self.sock, worker.addr, KeepAliveMessage())
+
+            #Wait ten seconds
+            time.sleep(self.KEEP_ALIVE_DELAY)
+    
+    #Decides what to do with the message received
+    def handle_message(self, msg : Message, addr):
+        if msg.type == "HELLO":
+            self.handle_hello(addr)
+        elif msg.type == "KEEPALIVE":
+            self.handle_keep_alive(addr)
+
+    #This message means a worker connected to the broker
+    def handle_hello(self, addr):
+        #Either creates or resurrects the worker
+        if addr not in self.workers.keys():
+            self.workers[addr] = WorkerInfo(addr)
+        else:
+            self.workers[addr].resurrect()
+
+    #Handles the keep alive by clearing the worker from suspicion for now
+    def handle_keep_alive(self, addr):
+        self.workers[addr].missed_keep_alives = 0
+
+    #Shutdown the broker and workers
+    def poweroff(self):
+        self.running = False
+        self.sock.close()
