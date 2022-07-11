@@ -1,36 +1,53 @@
 import os #For managing files
 import errno #For error handling
-import time
-from turtle import width #For calculating elapsed time
+import time #For calculating elapsed time
 from PIL import Image #For processing images
 import base64 #For encoding images
+import socket #For creating websockets
+
+#For sending and receiving messages
+from .protocol import Protocol
 
 #Wrapper class for holding image data for ease of access
 class ImageWrapper:
 
-    #Setup all image details from the image path
-    def __init__(self, img_path : str) -> None:
-        
-        #Encodes the image to base64
-        with open(img_path, "rb") as img:
-            self.image_str = base64.b64encode(img.read()).decode('utf-8')
+    #Properties
+    imgNames = []
+    image_str = ""
+    resized = False
+    modified_time = 0
+    neighbour = None
 
-        #Opens the image and get dimensions
-        with Image.open(img_path) as img:
-            #Get the dimensions
-            self.width, self.height = img.size
+    #Static method for creating a wrapper object from a single image
+    @classmethod
+    def Create(cls, name : str, path : str):
+
+        #The object to be created
+        img = ImageWrapper()
+
+        #The names of the images this object is composed of
+        img.imgNames = [name]
+
+        #Encodes the image to base64
+        with open(path, "rb") as file:
+            img.image_str = base64.b64encode(file.read()).decode('utf-8')
 
         #The time the file was last modified. Used for sorting
-        self.modified_time = os.stat(img_path).st_mtime
+        img.modified_time = os.stat(path).st_mtime
 
-    #Sets the desired height and returns whether new dimension is bigger at least 1x1
-    def set_desired_height(self, desired_height : int) -> bool:
-        self.desired_height = desired_height
-        self.desired_width = int(desired_height * (self.width /self.height ))
-        return self.desired_height > 0 and self.desired_width > 0
+        return img
+
+    #Set double link between neighbours
+    def set_neighbour(self, neighbour):
+        self.neighbour = neighbour
+        neighbour.neighbour = self
+    pass
 
 #Actual implementation of the Broker object
 class Broker:
+
+    #Whether the broker is running or not. When every job is done, the broker turns itself off.
+    running = True
 
     #region STATISTICS
 
@@ -58,8 +75,15 @@ class Broker:
         self.height = height
         self.setup_images()
 
-        pass
+        #Start the server after images are validated
+        self.start_server()
 
+        #Wait for messages continuously
+        self.run()
+
+    #region IMAGE MANAGEMENT
+
+    #Makes note of each valid image in the directory
     def setup_images(self):
         #Throw exception if directory doesn't exist
         if(not os.path.isdir(self.path)):
@@ -71,66 +95,48 @@ class Broker:
         pass
 
         #Iterates through the files in the images directory and creates the image object
-        self.images = []
-        self.total_height = 0
+        images = []
         for filename in os.listdir(self.path):
             f = os.path.join(self.path, filename)
             #Ignore non-image files (support only .jpg for now)
             if os.path.isfile(f) and filename.split('.')[-1] in ['jpg', 'jpeg']:
-                #Creates the image and stores it
-                img = ImageWrapper(f)
-                self.images.append(img)
-                self.total_height += img.height
+                #Creates the image and stores it the dictionary
+                images.append(ImageWrapper.Create(filename, f))
 
-        #If there are no images, do nothing.
-        self.img_count = len(self.images)
-        if self.img_count == 0:
-            print("There are no valid images in the selected directory.")
-            return
+        #Sorts lists by date of last modification and sets neighbours
+        images.sort(key=lambda x: x.modified_time, reverse=True)
+        last_img = None
+        for img in images:
+            if last_img != None:
+                img.set_neighbour(last_img)
+            last_img = img
 
-        #Iterate through every image and determine it's desired size
-        invalid_images = 0
-        for img in self.images:
-            #Updates the image desired height. If too small, flags it as such
-            if not img.set_desired_height(int((img.height * self.height)/self.total_height)):
-                invalid_images += 1
+        #Print result
+        img_count = len(images)
+        print(f"{img_count} image(s) found.")
+
+    #endregion
+
+    def start_server(self):
+
+        #Creates the brokers's server (UDP)
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+
+        #Added this line to prevent an error message stating that the previous address was already in use
+        self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+
+        #Binds the server socket to an interface address and port (> 1023)
+        self.sock.bind((socket.gethostname(), 1024))
+
+        print(f"Started server at port {1024}.")
+
+    #Continuously receive messages 
+    def run(self):
+
+        while self.running:
+            message = Protocol.receive(self.sock)
+
+            clientMsg = "Message from Client:{}".format(message)
+            
+            print(clientMsg)
             pass
-
-        #The combined height must be enough so that every individual image is at least 1x1
-        if invalid_images > 0:
-            raise ValueError(f"Desired height is too small, {invalid_images} image(s) would be smaller than 1x1. The mininum height for this collection would be {self.calculate_min_height()}.")
-        
-        #Sort the images by date of last modification
-        self.images.sort(key=lambda x: x.modified_time, reverse=True)
-
-        print(f"{self.img_count} image(s) found.")
-
-    #Calculates the minimum height iterativaly because algebra was too finicky
-    def calculate_min_height(self) -> int:
-
-        #The step for finding finding the min height. Starts at 1k
-        step = 10**4
-        min_height = step
-
-        while True:
-            #Try his new step
-            new_height = min_height - step
-
-            #Tests if the new size is valid for all images
-            valid = True
-            for img in self.images:
-                if not img.set_desired_height(int((img.height * new_height)/self.total_height)):
-                    valid = False
-
-            #If the new size is valid, continue trying the next step
-            if valid:
-                min_height = new_height
-            #If it's not valid...
-            else:
-                #...and the step is already at one, then we found the mininmum
-                if step == 1:
-                    break
-                #...but the step is not one, we can look further.
-                else:
-                    step /= 10
-        return int(min_height)
