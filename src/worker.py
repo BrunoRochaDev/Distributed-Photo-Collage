@@ -4,6 +4,8 @@ import threading #For parallelism
 import os #For clearing the console
 from datetime import datetime #For making timestamps
 
+from .broker import ImageWrapper #For image managing methods
+
 #For sending and receiving messages
 from .protocol import *
 
@@ -88,8 +90,11 @@ class Worker:
     #Firstly collect all the image fragments and then does the operation
     def handle_operation_request(self, msg : OperationRequestMessage):
         self.status = "RESIZING"
-
         self.put_outout_history("Received a RESIZE operation request.")
+
+        image_base64 = Protocol.request_image(self.sock, self.broker_sock, msg.id, msg.fragments)
+        PIL_image = ImageWrapper.decode(image_base64)
+        PIL_image.show()
 
     #Shutdown the worker
     def poweroff(self):

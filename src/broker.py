@@ -14,13 +14,14 @@ from io import BytesIO #For encoding images
 import math #pretty much only for rounding up numbers
 
 #For sending and receiving messages
-from .protocol import HelloMessage, KeepAliveMessage, Message, Protocol, OperationRequestMessage
+from .protocol import FragmentReplyMessage, FragmentRequestMessage, HelloMessage, KeepAliveMessage, Message, Protocol, OperationRequestMessage
 
 #Wrapper class for holding image data for ease of access
 class ImageWrapper:
 
     #Properties
     img_names = []
+    id = "" #A hash
     image_encoded = ""
     resized = False
     modified_time = 0
@@ -34,8 +35,9 @@ class ImageWrapper:
         #The object to be created
         img = ImageWrapper()
 
-        #The names of the images this object is composed of
+        #The id and names of the images this object is composed of
         img.img_names = [name]
+        img.set_id()
 
         #Encodes the image to base64
         #https://stackoverflow.com/questions/52411503/convert-image-to-base64-using-python-pil
@@ -47,6 +49,10 @@ class ImageWrapper:
 
         return img
 
+    #Combines the different names into an id
+    def set_id(self) -> str:
+        self.id = str(hash("".join(self.img_names)))[1:10]
+
     #Set double link between neighbours
     def set_neighbour(self, neighbour):
         self.neighbour = neighbour
@@ -57,9 +63,14 @@ class ImageWrapper:
         if self.worker_responsible != None and self.worker_responsible.state == "DEAD":
             self.worker_responsible = None
 
-    #Get the number of fragments this image has
-    def get_fragments(self):
-        return math.ceil(len(self.image_encoded) / Protocol.MAX_PACKET)
+    #Gets the number of fragments this image has
+    def fragment_count(self):
+        return math.ceil(len(self.image_encoded) / Protocol.MAX_FRAGMENT)
+
+    #Gets an specific fragment
+    def get_fragment(self, piece : int) -> bytes:
+        start = piece * Protocol.MAX_FRAGMENT
+        return self.image_encoded[start:start + Protocol.MAX_FRAGMENT]
 
     #Convert Image to Base64 
     @classmethod
@@ -67,6 +78,12 @@ class ImageWrapper:
         buffer = BytesIO()
         img.save(buffer, format="JPEG")
         return base64.b64encode(buffer.getvalue())
+
+    #Convert Base64 to Image 
+    @classmethod
+    def decode(cls, data : str) -> Image:
+        buff = BytesIO(base64.b64decode(data))
+        return Image.open(buff)
 
     #Formats for interface
     def __str__(self) -> str:
@@ -265,6 +282,8 @@ class Broker:
             self.handle_hello(addr)
         elif msg.type == "KEEPALIVE":
             self.handle_keep_alive(addr)
+        elif msg.type == "FRAGREQUEST":
+            self.handle_fragment_request(msg, addr)
 
     #This message means a worker connected to the broker
     def handle_hello(self, addr):
@@ -290,6 +309,20 @@ class Broker:
     #Handles the keep alive by clearing the worker from suspicion for now
     def handle_keep_alive(self, addr):
         self.workers[addr].missed_keep_alives = 0
+
+    #Handles the request for image fragments
+    def handle_fragment_request(self, msg : FragmentRequestMessage, addr):
+        #Sends back the requested piece
+        img = None
+        for i in self.images:
+            if i.id == msg.id:
+                img = i
+                break
+        
+        fragment = img.get_fragment(msg.piece)
+        reply = FragmentReplyMessage(msg.id, fragment.decode('utf-8'), msg.piece)
+        with self.sock_lock:
+            Protocol.send(self.sock, addr, reply)
 
     #Invoked whenever a task is completed or a new worker has joined. Sends tasks to workers if needed
     def assign_task(self):
@@ -320,7 +353,7 @@ class Broker:
 
             self.put_outout_history(f"Sending '{'+'.join(img.img_names)}' to be resized by Worker {worker.id},")
             #Sends the command to the worker
-            msg = OperationRequestMessage("RESIZE", img.get_fragments())
+            msg = OperationRequestMessage("RESIZE", img.id,img.fragment_count())
             with self.sock_lock:
                 Protocol.send(self.sock, worker.addr, msg)
 
