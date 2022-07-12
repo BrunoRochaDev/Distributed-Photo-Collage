@@ -29,6 +29,7 @@ class Worker:
         #Sends to broker a hello message
         Protocol.send(self.sock, self.broker_sock, HelloMessage())
 
+    #Wait for commands from the broker
     def run(self):
 
         #Wait for commands from the broker

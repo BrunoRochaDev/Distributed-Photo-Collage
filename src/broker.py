@@ -3,7 +3,9 @@ import errno #For error handling
 
 import socket #For creating websockets
 import threading #For parallelism
+
 import time #For calculating elapsed time
+from datetime import datetime
 
 import base64 #For encoding images
 
@@ -14,9 +16,9 @@ from .protocol import KeepAliveMessage, Message, Protocol
 class ImageWrapper:
 
     #Properties
-    imgNames = []
+    img_names = []
     image_str = ""
-    resized = False
+    state = 'PENDING'
     modified_time = 0
     neighbour = None
 
@@ -28,7 +30,7 @@ class ImageWrapper:
         img = ImageWrapper()
 
         #The names of the images this object is composed of
-        img.imgNames = [name]
+        img.img_names = [name]
 
         #Encodes the image to base64
         with open(path, "rb") as file:
@@ -43,8 +45,16 @@ class ImageWrapper:
     def set_neighbour(self, neighbour):
         self.neighbour = neighbour
         neighbour.neighbour = self
-    pass
+    
+    #Formats for interface
+    def __str__(self) -> str:
+        return '{:13s} {:3s}'.format(self.state, '+'.join(self.img_names))
 
+#Keep alive stats
+KEEP_ALIVE_DELAY = 1
+KEEP_ALIVE_TOLERANCE = 6
+
+#Class for holding worker info
 class WorkerInfo:
     
     #Properties
@@ -60,17 +70,19 @@ class WorkerInfo:
     def resurrect(self):
         self.state = "IDLE"
         self.missed_keep_alives = 0
-    pass
+
+        #Update the interface
+        self.print_interface()
+    
+    #Formats for interface
+    def __str__(self) -> str:
+        return '{}:{:10s} {:10s} {}'.format(self.addr[0], str(self.addr[1]), self.state, f'{self.missed_keep_alives}/{KEEP_ALIVE_TOLERANCE}')
 
 #Actual implementation of the Broker object
 class Broker:
 
     #Whether the broker is running or not. When every job is done, the broker turns itself off.
     running = True
-
-    #Keep alive stats
-    KEEP_ALIVE_DELAY = 1
-    KEEP_ALIVE_TOLERANCE = 6
 
     #region STATISTICS
 
@@ -117,25 +129,24 @@ class Broker:
         pass
 
         #Iterates through the files in the images directory and creates the image object
-        images = []
+        self.images = []
         for filename in os.listdir(self.path):
             f = os.path.join(self.path, filename)
             #Ignore non-image files (support only .jpg for now)
             if os.path.isfile(f) and filename.split('.')[-1] in ['jpg', 'jpeg']:
                 #Creates the image and stores it the dictionary
-                images.append(ImageWrapper.create(filename, f))
+                self.images.append(ImageWrapper.create(filename, f))
 
         #Sorts lists by date of last modification and sets neighbours
-        images.sort(key=lambda x: x.modified_time, reverse=True)
+        self.images.sort(key=lambda x: x.modified_time, reverse=True)
         last_img = None
-        for img in images:
+        for img in self.images:
             if last_img != None:
                 img.set_neighbour(last_img)
             last_img = img
 
         #Print result
-        img_count = len(images)
-        print(f"{img_count} image(s) found.")
+        self.put_outout_history(f"{len(self.images)} image(s) found.")
 
     #endregion
 
@@ -149,7 +160,7 @@ class Broker:
         #Binds the server socket to an interface address and port (> 1023)
         self.sock.bind((socket.gethostname(), 1024))
 
-        print(f"Started server at port {1024}.")
+        self.put_outout_history(f"Started server at port {1024}.")
 
     #Serve clients countinously
     def run(self):
@@ -181,17 +192,23 @@ class Broker:
 
             #Evaluate every worker
             for worker in self.workers.values():
+                if worker.state == 'DEAD':
+                    continue
+
                 worker.missed_keep_alives += 1 #Increment the missed count
 
                 #If missed too many messages, probably dead. Delete it
-                if worker.state != "DEAD" and worker.missed_keep_alives >= self.KEEP_ALIVE_TOLERANCE:
-                    print(f"{worker.addr} is dead.")
+                if worker.missed_keep_alives >= KEEP_ALIVE_TOLERANCE:
                     worker.state = "DEAD"
+                    self.put_outout_history(f"{worker.addr} is dead.")
                 else:
                     Protocol.send(self.sock, worker.addr, KeepAliveMessage())
 
+            #Update interfaces
+            self.print_interface()
+
             #Wait ten seconds
-            time.sleep(self.KEEP_ALIVE_DELAY)
+            time.sleep(KEEP_ALIVE_DELAY)
     
     #Decides what to do with the message received
     def handle_message(self, msg : Message, addr):
@@ -208,6 +225,9 @@ class Broker:
         else:
             self.workers[addr].resurrect()
 
+        #Update the interface
+        self.put_outout_history(f"{addr} worker just joined.")
+
     #Handles the keep alive by clearing the worker from suspicion for now
     def handle_keep_alive(self, addr):
         self.workers[addr].missed_keep_alives = 0
@@ -216,3 +236,49 @@ class Broker:
     def poweroff(self):
         self.running = False
         self.sock.close()
+
+    #region INTERFACE
+
+    #Helper method for the output history queue
+    OUTPUT_QUEUE_LENGTH = 20    
+    output = ['...' for i in range(0,OUTPUT_QUEUE_LENGTH)]
+    def put_outout_history(self, value : str):
+
+        #Get the current time for timestamp
+        curr_time = datetime.now()
+        time = "{:02d}:{:02d}:{:02d}".format(curr_time.hour, curr_time.minute, curr_time.second)
+
+        #Put the output in the queue
+        value = "{:10s} {}".format(time, value)
+        for i in reversed(range(0, self.OUTPUT_QUEUE_LENGTH)):
+            if i == 0:
+                self.output[i] = value
+            else:
+                self.output[i] = self.output[i-1]
+        self.print_interface()
+
+    #Prints the interface
+    def print_interface(self) -> None:
+        os.system("cls||clear") #Clears on both windows and linux
+
+        #Broker info
+        print("BROKER\n"+"-"*47)  
+        print(f"Address: {socket.gethostname()}")
+        print("Port: 1024")
+
+        #Image window
+        print("\nIMAGES\n"+"-"*47)
+        for id, img in enumerate(self.images):
+            print(f'{id+1}.\t{img}')
+
+        #Worker window
+        print("\nWORKERS\n"+"-"*47)
+        for id, worker in enumerate(self.workers.values()):
+            print(f'{id+1}.\t{worker}')
+
+        #Output window
+        print("\nOUTPUT\n"+"-"*47)
+        print("\n".join(self.output))
+        pass
+
+    #endregion
