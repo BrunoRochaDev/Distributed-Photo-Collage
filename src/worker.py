@@ -68,6 +68,8 @@ class Worker:
             self.handle_hello(msg)
         elif msg.type == "KEEPALIVE":
             self.handle_keep_alive(msg)
+        elif msg.type == "OPREQUEST":
+            self.handle_operation_request(msg)
 
     #This message means the broker has accepted the connection
     def handle_hello(self,msg : HelloMessage):
@@ -79,10 +81,15 @@ class Worker:
         #Update the interface
         self.put_outout_history("Broker has acknowledged the connection.")
 
-
     #Simply sends the message back so that the broker knows this is alive
     def handle_keep_alive(self, msg : KeepAliveMessage):
         Protocol.send(self.sock, self.broker_sock, msg)
+
+    #Firstly collect all the image fragments and then does the operation
+    def handle_operation_request(self, msg : OperationRequestMessage):
+        self.status = "RESIZING"
+
+        self.put_outout_history("Received a RESIZE operation request.")
 
     #Shutdown the worker
     def poweroff(self):

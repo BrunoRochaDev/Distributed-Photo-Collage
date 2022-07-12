@@ -24,6 +24,9 @@ class Message:
             if type == "KEEPALIVE":
                 return KeepAliveMessage()
 
+            if type == "OPREQUEST":
+                return OperationRequestMessage(JSON["operation"], JSON["fragments"])
+
         except:
             raise ValueError("Could not parse JSON to message.")
         pass
@@ -41,11 +44,23 @@ class KeepAliveMessage(Message):
     def __init__(self):
         self.type = "KEEPALIVE"
 
+#Requests a worker to do an operation with a file
+#The request comes with the number of fragments for each image has
+#Worker must request fragments individually. This is done because UDP is an unreliable protocol
+class OperationRequestMessage(Message):
+    def __init__(self, operation : str, fragments : list):
+        self.type = "OPREQUEST"
+        self.operation = operation #Can be "MERGE" or "RESIZE"
+        self.fragments = fragments
+
 #The protocols for sending text messages and images
 class Protocol:
 
     #The number of bytes for the header
     HEADER_BYTES = 4
+
+    #The maximum size a packet can be in bytes
+    MAX_PACKET = 65000
 
     #Sends a message
     @classmethod
