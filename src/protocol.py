@@ -120,15 +120,15 @@ class Protocol:
                 if i not in received_pieces:
                     cls.send(sock, addr, FragmentRequestMessage(id, i))
 
-            for j in range(0, fragment_count):
-                #Ignore unrelated messages (might be dangerous, change this later?)
-                msg = cls.receive(sock)[0]
-                if(msg.type != "FRAGREPLY"):
-                    continue
-                #Add the fragment to the collection
-                if msg.piece not in received_pieces:
-                    received_pieces.append(msg.piece)
-                    received_fragments[msg.piece] = msg.data
+            #Ignore unrelated messages (might be dangerous, change this later?)
+            msg = cls.receive(sock)[0]
+            if(msg.type != "FRAGREPLY"):
+                continue
+            #Add the fragment to the collection
+            if msg.piece not in received_pieces:
+
+                received_pieces.append(msg.piece)
+                received_fragments[msg.piece] = msg.data
 
         #Reconstruct it and send it
         return ''.join(received_fragments)
