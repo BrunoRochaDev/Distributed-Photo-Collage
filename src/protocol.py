@@ -14,11 +14,12 @@ class Message:
     @classmethod
     def decode(cls, msg : dict):
         try:
-
-            type = json.loads(msg)["type"]
+            
+            JSON = json.loads(msg)
+            type = JSON["type"]
 
             if type == "HELLO":
-                return HelloMessage()
+                return HelloMessage(JSON["id"])
 
             if type == "KEEPALIVE":
                 return KeepAliveMessage()
@@ -27,21 +28,18 @@ class Message:
             raise ValueError("Could not parse JSON to message.")
         pass
 
-#Hello message from the worker. Informs the broker that this worker is connect to it
+#Hello message, either from the broker or worker.
+#When sent by the worker, informs the broker that the worker is connect to it
+#When sent by the broker, informs the worker that the broker has acknowledged the connecion
 class HelloMessage(Message):
-    def __init__(self):
+    def __init__(self, id : int = 0):
         self.type = "HELLO"
-
-    def __str__(self) -> str:
-        return "Hello, I'm ready for work."
+        self.id  = id #The id is set by the broker, informing the worker's identifier
 
 #Keep alive message. Used for knowing when a worker dies
 class KeepAliveMessage(Message):
     def __init__(self):
         self.type = "KEEPALIVE"
-
-    def __str__(self) -> str:
-        return "Keeping alive..."
 
 #The protocols for sending text messages and images
 class Protocol:

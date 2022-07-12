@@ -4,13 +4,13 @@ import errno #For error handling
 import socket #For creating websockets
 import threading #For parallelism
 
-import time #For calculating elapsed time
-from datetime import datetime
+import time #For sleeping
+from datetime import datetime #For calculating elapsed time and making timestamps
 
 import base64 #For encoding images
 
 #For sending and receiving messages
-from .protocol import KeepAliveMessage, Message, Protocol
+from .protocol import HelloMessage, KeepAliveMessage, Message, Protocol
 
 #Wrapper class for holding image data for ease of access
 class ImageWrapper:
@@ -225,6 +225,9 @@ class Broker:
         else:
             self.workers[addr].resurrect()
 
+        #Sents hello message back, acknowledging the connection
+        Protocol.send(self.sock, addr, HelloMessage(len(self.workers))) #Gives the worker it's ID
+
         #Update the interface
         self.put_outout_history(f"{addr} worker just joined.")
 
@@ -262,22 +265,24 @@ class Broker:
         os.system("cls||clear") #Clears on both windows and linux
 
         #Broker info
-        print("BROKER\n"+"-"*47)  
+        print("BROKER\n"+"-"*50)  
         print(f"Address: {socket.gethostname()}")
         print("Port: 1024")
 
         #Image window
-        print("\nIMAGES\n"+"-"*47)
+        print("\nIMAGES\n"+"-"*50)
         for id, img in enumerate(self.images):
             print(f'{id+1}.\t{img}')
 
         #Worker window
-        print("\nWORKERS\n"+"-"*47)
+        print("\nWORKERS")
+        print('{}\t{:20s} {:10s} {}'.format("Id", "Address", "Status", "Keep Alive"))
+        print("-"*50)
         for id, worker in enumerate(self.workers.values()):
             print(f'{id+1}.\t{worker}')
 
         #Output window
-        print("\nOUTPUT\n"+"-"*47)
+        print("\nOUTPUT\n"+"-"*50)
         print("\n".join(self.output))
         pass
 
