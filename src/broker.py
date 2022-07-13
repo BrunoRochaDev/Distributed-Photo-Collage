@@ -353,7 +353,7 @@ class Broker:
 
             self.put_outout_history(f"Sending '{'+'.join(img.img_names)}' to be resized by Worker {worker.id},")
             #Sends the command to the worker
-            msg = OperationRequestMessage("RESIZE", img.id,img.fragment_count())
+            msg = OperationRequestMessage("RESIZE", img.id,img.fragment_count(), self.height)
             with self.sock_lock:
                 Protocol.send(self.sock, worker.addr, msg)
 

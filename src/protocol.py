@@ -24,7 +24,7 @@ class Message:
                 return KeepAliveMessage()
 
             if type == "OPREQUEST":
-                return OperationRequestMessage(JSON["operation"],JSON["id"], JSON["fragments"])
+                return OperationRequestMessage(JSON["operation"],JSON["id"], JSON["fragments"], JSON["height"])
 
             if type == "FRAGREQUEST":
                 return FragmentRequestMessage(JSON["id"], JSON["piece"])
@@ -52,9 +52,10 @@ class KeepAliveMessage(Message):
 #The request comes with the number of fragments for each image has
 #Worker must request fragments individually. This is done because UDP is an unreliable protocol
 class OperationRequestMessage(Message):
-    def __init__(self, operation : str, id :str, fragments : list):
+    def __init__(self, operation : str, id :str, fragments : list, height : int = 0):
         self.type = "OPREQUEST"
         self.operation = operation #Can be "MERGE" or "RESIZE"
+        self.height = height #Only used on resizing operations
         self.id = id #The name of the file
         self.fragments = fragments
 
@@ -79,10 +80,10 @@ class Protocol:
     HEADER_BYTES = 4
 
     #The maximum size a packet can be in bytes
-    MAX_PACKET = 64000
+    MAX_PACKET = 45000
 
     #Basically, the max packet minus a few to account for the JSON overhead
-    MAX_FRAGMENT = MAX_PACKET - 70 
+    MAX_FRAGMENT = MAX_PACKET - 100
 
     #Sends a message
     @classmethod
@@ -102,13 +103,13 @@ class Protocol:
     @classmethod
     def receive(cls,sock : socket) -> Message:
         data, client_address = sock.recvfrom(cls.MAX_PACKET)
+
         return (Message.decode(data.decode('utf-8')), client_address)
     pass
 
     #Gets each fragment of an image and reconstruct it into a base64 string
     @classmethod
     def request_image(cls, sock : socket, addr, id :str, fragment_count : int) -> str:
-        
         received_pieces = []
         received_fragments = [None for i in range(fragment_count)]
 
