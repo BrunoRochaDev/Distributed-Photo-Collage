@@ -25,7 +25,6 @@ class ImageWrapper:
     image_encoded = b""
     resized = False
     modified_time = 0
-    neighbour = None
     worker_responsible = None
 
     #Static method for creating a wrapper object from a single image
@@ -52,11 +51,6 @@ class ImageWrapper:
     #Combines the different names into an id
     def set_id(self) -> str:
         self.id = str(hash("".join(self.img_names)))[1:10]
-
-    #Set double link between neighbours
-    def set_neighbour(self, neighbour):
-        self.neighbour = neighbour
-        neighbour.neighbour = self
     
     #If the worker is dead, clears it
     def update_worker(self):
@@ -76,6 +70,14 @@ class ImageWrapper:
     def get_fragment(self, piece : int) -> bytes:
         start = piece * Protocol.MAX_FRAGMENT
         return self.image_encoded[start:start + Protocol.MAX_FRAGMENT]
+
+    #Merge with it's neighbour
+    def merge(self, neighbour): #Returns a tuple of both images and the new id
+        self.img_names = self.img_names + neighbour.img_names
+        self.set_id()
+        self.resized = False
+
+        return (self.image_encoded, neighbour.image_encoded), self.id
 
     #Convert Image to Base64 
     @classmethod
@@ -98,7 +100,7 @@ class ImageWrapper:
         else:
             state = "ASSIGNED" if self.worker_responsible != None else "PENDING"
 
-        return '{:13s} {:3s}'.format(state, '+'.join(self.img_names))
+        return '{:13s} {:3s}'.format(state, ' + '.join(self.img_names))
 
 #Keep alive stats
 KEEP_ALIVE_DELAY = 1
@@ -196,13 +198,8 @@ class Broker:
                 #Creates the image and stores it the dictionary
                 self.images.append(ImageWrapper.create(filename, f))
 
-        #Sorts lists by date of last modification and sets neighbours
+        #Sorts lists by date of last modification
         self.images.sort(key=lambda x: x.modified_time, reverse=True)
-        last_img = None
-        for img in self.images:
-            if last_img != None:
-                img.set_neighbour(last_img)
-            last_img = img
 
         #Print result
         self.put_outout_history(f"{len(self.images)} image(s) found.")
@@ -368,23 +365,34 @@ class Broker:
         if len(idle_workers) == 0:
             return
 
-        #If there are images that have not been resized, assign a worker to it
-        pending_images = self.get_pending_images()
-        for img in pending_images:
+        #Evaluate if any of the images need to be operated on
+        for index, img in enumerate(self.images):
             #Don't bother if there ano idle workers
             if len(idle_workers) == 0:
                 break      
 
-            #Assign a worker to it
-            worker = idle_workers.pop()
-            worker.assign_task("RESIZE", img)
-            img.worker_responsible = worker
+            #Resize if needed
+            if not img.resized and img.worker_responsible == None:
+                #Assign a worker to it
+                worker = idle_workers.pop()
+                worker.assign_task("RESIZE", img)
+                img.worker_responsible = worker
 
-            self.put_outout_history(f"Sending '{'+'.join(img.img_names)}' to be resized by Worker {worker.id},")
-            #Sends the command to the worker
-            msg = ResizeMessage(img.id,img.fragment_count(), self.height)
-            with self.sock_lock:
-                Protocol.send(self.sock, worker.addr, msg)
+                self.put_outout_history(f"Sending '{' + '.join(img.img_names)}' to be resized by Worker {worker.id},")
+                #Sends the command to the worker
+                msg = ResizeMessage(img.id,img.fragment_count(), self.height)
+                with self.sock_lock:
+                    Protocol.send(self.sock, worker.addr, msg)
+            #Look for merges
+            else:
+                next_img = self.images[index + 1 % len(self.images)]
+
+                #If it is also resized, then merge
+                if next_img != img and next_img.resized:
+                    img.merge(next_img)
+                    self.images.remove(next_img)
+                    self.put_outout_history(f"Merged two images.")
+                    pass
 
         pass
 
@@ -395,16 +403,6 @@ class Broker:
         for w in self.workers.values():
             if w.state == 'IDLE':
                 res.append(w)
-
-        return res
-
-    #Returns a list of all images that have not been resized
-    def get_pending_images(self) -> list:
-        res = []
-
-        for i in self.images:
-            if i.worker_responsible == None:
-                res.append(i)
 
         return res
 
