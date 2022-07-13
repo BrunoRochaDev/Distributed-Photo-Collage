@@ -1,13 +1,54 @@
+import math #For resizing image
 import socket #For creating websockets
-from PIL import Image #For processing images
 import threading #For parallelism
 import os #For clearing the console
 from datetime import datetime #For making timestamps
-
-from .broker import ImageWrapper #For image managing methods
+import time #For sleeping (simulate complex work)
 
 #For sending and receiving messages
 from .protocol import *
+
+from PIL import Image #For processing images
+import base64 #For encoding images
+from io import BytesIO #For encoding images
+
+#Wrapper class for holding image data for ease of access
+#DIFFERENT FROM THE ONE IN THE BROKER
+class ImageWrapper:
+
+    #Properties
+    id = ""
+    image_encoded = b""
+
+    #Creates the image wrapper
+    def __init__(self, id : str, PIL_image : Image) -> None:
+
+        self.id = id
+        self.image_encoded = ImageWrapper.encode(PIL_image)
+
+        pass
+
+    #Gets the number of fragments this image has
+    def fragment_count(self):
+        return math.ceil(len(self.image_encoded) / Protocol.MAX_FRAGMENT)
+
+    #Gets an specific fragment
+    def get_fragment(self, piece : int) -> bytes:
+        start = piece * Protocol.MAX_FRAGMENT
+        return self.image_encoded[start:start + Protocol.MAX_FRAGMENT]
+
+    #Convert Image to Base64 
+    @classmethod
+    def encode(cls, img : Image) -> str:
+        buffer = BytesIO()
+        img.save(buffer, format="JPEG")
+        return base64.b64encode(buffer.getvalue())
+
+    #Convert Base64 to Image 
+    @classmethod
+    def decode(cls, data : str) -> Image:
+        buff = BytesIO(base64.b64decode(data))
+        return Image.open(buff)
 
 class Worker:
 
@@ -23,8 +64,14 @@ class Worker:
     #The current status of the worker. Can be either IDLE, MERGING, RESIZING or DONE 
     status = "IDLE"
 
+    #The dictionary of the images
+    images = {}
+
     def __init__(self, port : int, address : str = socket.gethostname()) -> None:
         
+        #Use a lock to make sure only one thread uses the sendto() method at a time.
+        self.sock_lock = threading.Lock()
+
         self.broker_sock = (address, port)
 
         #Starts the client and connects to the broker
@@ -41,9 +88,9 @@ class Worker:
         self.put_outout_history("Starting up client...")
 
         #Sends to broker a hello message
-        Protocol.send(self.sock, self.broker_sock, HelloMessage())
+        with self.sock_lock:
+            Protocol.send(self.sock, self.broker_sock, HelloMessage())
         self.put_outout_history(f"Attemping to connect to broker {self.broker_sock}...")
-
 
     #Wait for commands from the broker
     def run(self):
@@ -70,8 +117,10 @@ class Worker:
             self.handle_hello(msg)
         elif msg.type == "KEEPALIVE":
             self.handle_keep_alive(msg)
-        elif msg.type == "OPREQUEST":
+        elif msg.type == "RESIZE":
             self.handle_operation_request(msg)
+        elif msg.type == "FRAGREQUEST":
+            self.handle_fragment_request(msg)
 
     #This message means the broker has accepted the connection
     def handle_hello(self,msg : HelloMessage):
@@ -85,16 +134,45 @@ class Worker:
 
     #Simply sends the message back so that the broker knows this is alive
     def handle_keep_alive(self, msg : KeepAliveMessage):
-        Protocol.send(self.sock, self.broker_sock, msg)
+        with self.sock_lock:
+            Protocol.send(self.sock, self.broker_sock, msg)
 
     #Firstly collect all the image fragments and then does the operation
-    def handle_operation_request(self, msg : OperationRequestMessage):
+    def handle_operation_request(self, msg : ResizeMessage):
         self.status = "RESIZING"
-        self.put_outout_history("Received a RESIZE operation request.")
+        self.put_outout_history("Received a resize operation request. Resizing...")
 
+        #Get all fragments and reconstructs the image
         image_base64 = Protocol.request_image(self.sock, self.broker_sock, msg.id, msg.fragments)
         PIL_image = ImageWrapper.decode(image_base64)
-        PIL_image.show()
+
+        #Calculates the new dimension
+        width, height = PIL_image.size
+        ratio = width/height
+
+        new_width = math.ceil(msg.height * ratio)
+        new_height = math.ceil(msg.height)
+
+        #Resizes the image and stores it in the image dict
+        PIL_image = PIL_image.resize((new_width, new_height))
+        time.sleep(1)
+        self.images[msg.id] = ImageWrapper(msg.id, PIL_image)
+
+        #Notifies the broker it's done
+        self.status = "IDLE"
+        self.put_outout_history("Resized the image. Sending it to the broker...")
+        with self.sock_lock:
+            Protocol.send(self.sock, self.broker_sock, OperationReplyMessage(msg.id, self.id, self.images[msg.id].fragment_count()))
+
+    #Handles the request for image fragments
+    def handle_fragment_request(self, msg : FragmentRequestMessage):
+        #Sends back the requested piece
+        img = self.images[msg.id]
+        
+        fragment = img.get_fragment(msg.piece)
+        reply = FragmentReplyMessage(msg.id, fragment.decode('utf-8'), msg.piece)
+        with self.sock_lock:
+            Protocol.send(self.sock, self.broker_sock, reply)  
 
     #Shutdown the worker
     def poweroff(self):

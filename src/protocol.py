@@ -23,8 +23,10 @@ class Message:
             if type == "KEEPALIVE":
                 return KeepAliveMessage()
 
-            if type == "OPREQUEST":
-                return OperationRequestMessage(JSON["operation"],JSON["id"], JSON["fragments"], JSON["height"])
+            if type == "RESIZE":
+                return ResizeMessage(JSON["id"], JSON["fragments"], JSON["height"])
+            if type == "OPREPLY":
+                return OperationReplyMessage(JSON["id"], JSON["worker"], JSON["fragments"])
 
             if type == "FRAGREQUEST":
                 return FragmentRequestMessage(JSON["id"], JSON["piece"])
@@ -48,16 +50,22 @@ class KeepAliveMessage(Message):
     def __init__(self):
         self.type = "KEEPALIVE"
 
-#Requests a worker to do an operation with a file
+#Messages for requesting a worker to do an operation (resize and merge)
 #The request comes with the number of fragments for each image has
 #Worker must request fragments individually. This is done because UDP is an unreliable protocol
-class OperationRequestMessage(Message):
-    def __init__(self, operation : str, id :str, fragments : list, height : int = 0):
-        self.type = "OPREQUEST"
-        self.operation = operation #Can be "MERGE" or "RESIZE"
-        self.height = height #Only used on resizing operations
+class ResizeMessage(Message):
+    def __init__(self,  id :str, fragments : int, height : int):
+        self.type = "RESIZE"
+        self.height = height
         self.id = id #The name of the file
         self.fragments = fragments
+class OperationReplyMessage(Message):
+    def __init__(self, id : str, worker : int, fragments: int):
+        self.type = "OPREPLY"
+        self.id = id
+        self.worker = worker
+        self.fragments = fragments
+        pass
 
 #For requesting and receiving fragments
 #Must contain it's piece because packets can arrive out of order

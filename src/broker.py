@@ -14,7 +14,7 @@ from io import BytesIO #For encoding images
 import math #pretty much only for rounding up numbers
 
 #For sending and receiving messages
-from .protocol import FragmentReplyMessage, FragmentRequestMessage, HelloMessage, KeepAliveMessage, Message, Protocol, OperationRequestMessage
+from .protocol import FragmentReplyMessage, FragmentRequestMessage, HelloMessage, KeepAliveMessage, Message, OperationReplyMessage, Protocol, ResizeMessage
 
 #Wrapper class for holding image data for ease of access
 class ImageWrapper:
@@ -22,7 +22,7 @@ class ImageWrapper:
     #Properties
     img_names = []
     id = "" #A hash
-    image_encoded = ""
+    image_encoded = b""
     resized = False
     modified_time = 0
     neighbour = None
@@ -62,6 +62,11 @@ class ImageWrapper:
     def update_worker(self):
         if self.worker_responsible != None and self.worker_responsible.state == "DEAD":
             self.worker_responsible = None
+
+    #Updates the image (done when a resizing reply comes through)
+    def update_image_resized(self, new_image : str):
+        self.resized = True
+        self.image_encoded = new_image
 
     #Gets the number of fragments this image has
     def fragment_count(self):
@@ -284,6 +289,8 @@ class Broker:
             self.handle_keep_alive(addr)
         elif msg.type == "FRAGREQUEST":
             self.handle_fragment_request(msg, addr)
+        elif msg.type == "OPREPLY":
+            self.handle_operation_reply(msg, addr)
 
     #This message means a worker connected to the broker
     def handle_hello(self, addr):
@@ -324,6 +331,28 @@ class Broker:
         with self.sock_lock:
             Protocol.send(self.sock, addr, reply)
 
+    #Receives the result of an operation from a worker
+    def handle_operation_reply(self, msg : OperationReplyMessage, addr):
+
+        #Flags that the worker is done with their operation
+        worker = self.workers[addr]
+        worker.state = "IDLE"
+
+        #Get all fragments and reconstructs the image
+        image_base64 = Protocol.request_image(self.sock, addr, msg.id, msg.fragments)
+
+        #Updates the image to the resized varient
+        for img in self.images:
+            if img.id == msg.id:
+                img.update_image_resized(image_base64)
+
+        self.put_outout_history(f"Worker {msg.worker} is done with it's operation.")
+
+        #See if there's a new task for the worker
+        self.assign_task()
+
+        pass
+
     #Invoked whenever a task is completed or a new worker has joined. Sends tasks to workers if needed
     def assign_task(self):
 
@@ -353,7 +382,7 @@ class Broker:
 
             self.put_outout_history(f"Sending '{'+'.join(img.img_names)}' to be resized by Worker {worker.id},")
             #Sends the command to the worker
-            msg = OperationRequestMessage("RESIZE", img.id,img.fragment_count(), self.height)
+            msg = ResizeMessage(img.id,img.fragment_count(), self.height)
             with self.sock_lock:
                 Protocol.send(self.sock, worker.addr, msg)
 
