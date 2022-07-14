@@ -2,6 +2,12 @@ import json #For JSON serialization
 import socket #For creating websockets
 import zlib #For checksum
 
+#The maximum size a packet can be in bytes
+MAX_PACKET = 45000
+
+#Basically, the max packet minus a few to account for the JSON overhead
+MAX_FRAGMENT = MAX_PACKET - 100
+
 #Base message. Other messages should extend this
 class Message:
     type = ""
@@ -28,7 +34,7 @@ class Message:
             if type == "MERGEREQUEST":
                 return MergeRequestMessage(JSON["id"], JSON["fragments"])
             if type == "OPREPLY":
-                return OperationReplyMessage(JSON["operation"], JSON["id"], JSON["worker"], JSON["fragments"])
+                return OperationReplyMessage(JSON["operation"], JSON["id"], JSON["worker"], JSON["fragments"], JSON["prev_ids"])
 
             if type == "FRAGREQUEST":
                 return FragmentRequestMessage(JSON["id"], JSON["piece"])
@@ -70,12 +76,13 @@ class MergeRequestMessage(Message):
         self.id = id #A tuple, containing the id of both images
         self.fragments = fragments #A tuple, containing the fragment count of both images
 class OperationReplyMessage(Message):
-    def __init__(self, operation : str, id : str, worker : int, fragments: int):
+    def __init__(self, operation : str, id : str, worker : int, fragments: int, prev_ids : list = []):
         self.type = "OPREPLY"
         self.operation = operation #RESIZE or MERGE
         self.id = id #a tuple or a int, depending on operation
         self.worker = worker
         self.fragments = fragments
+        self.prev_ids = prev_ids #The id of the images before the merge (only applicable to MERGE)
         pass
 
 #For requesting and receiving fragments
@@ -97,64 +104,3 @@ class FragmentReplyMessage(Message):
 class DoneMessage(Message):
     def __init__(self) -> None:
         self.type = "DONE"
-
-#The protocols for sending text messages and images
-class Protocol:
-
-    #The number of bytes for the header
-    HEADER_BYTES = 4
-
-    #The maximum size a packet can be in bytes
-    MAX_PACKET = 45000
-
-    #Basically, the max packet minus a few to account for the JSON overhead
-    MAX_FRAGMENT = MAX_PACKET - 100
-
-    #Sends a message
-    @classmethod
-    def send(cls,sock : socket, addr, msg : Message) -> None:
-
-        #Construct the message with the checksum
-        byte_msg = str.encode(msg.encode())
-        checksum = cls.calculate_checksum(byte_msg)
-
-        sock.sendto(byte_msg,addr)
-    
-    @classmethod
-    def calculate_checksum(cls, data) -> int:
-        return zlib.crc32(data)
-
-    #Receives a message
-    @classmethod
-    def receive(cls,sock : socket) -> Message:
-        data, client_address = sock.recvfrom(cls.MAX_PACKET)
-
-        return (Message.decode(data.decode('utf-8')), client_address)
-    pass
-
-    #Gets each fragment of an image and reconstruct it into a base64 string
-    @classmethod
-    def request_image(cls, sock : socket, addr, id :str, fragment_count : int) -> str:
-        received_pieces = []
-        received_fragments = [None for i in range(fragment_count)]
-
-        #Keeps trying until all fragment are obtained
-        while len(received_pieces) < fragment_count:
-
-            #Asks for the missing pieces
-            for i in range(0, fragment_count):
-                if i not in received_pieces:
-                    cls.send(sock, addr, FragmentRequestMessage(id, i))
-
-            #Ignore unrelated messages (might be dangerous, change this later?)
-            msg = cls.receive(sock)[0]
-            if(msg.type != "FRAGREPLY"):
-                continue
-            #Add the fragment to the collection
-            if msg.piece not in received_pieces:
-
-                received_pieces.append(msg.piece)
-                received_fragments[msg.piece] = msg.data
-
-        #Reconstruct it and send it
-        return ''.join(received_fragments)

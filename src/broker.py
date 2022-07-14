@@ -13,8 +13,10 @@ from io import BytesIO #For encoding images
 
 import math #pretty much only for rounding up numbers
 
+from .message_manager import ImageRequest, MessageManager
+
 #For sending and receiving messages
-from .protocol import DoneMessage, FragmentReplyMessage, FragmentRequestMessage, HelloMessage, KeepAliveMessage, MergeRequestMessage, Message, OperationReplyMessage, Protocol, ResizeRequestMessage
+from .protocol import *
 
 #Wrapper class for holding image data for ease of access
 class ImageWrapper:
@@ -73,12 +75,12 @@ class ImageWrapper:
 
     #Gets the number of fragments this image has
     def fragment_count(self):
-        return math.ceil(len(self.image_encoded) / Protocol.MAX_FRAGMENT)
+        return math.ceil(len(self.image_encoded) / MAX_FRAGMENT)
 
     #Gets an specific fragment
     def get_fragment(self, piece : int) -> bytes:
-        start = piece * Protocol.MAX_FRAGMENT
-        return self.image_encoded[start:start + Protocol.MAX_FRAGMENT]
+        start = piece * MAX_FRAGMENT
+        return self.image_encoded[start:start + MAX_FRAGMENT]
 
     #Merge with it's neighbour
     def merge(self, neighbour, new_image : str):
@@ -129,8 +131,6 @@ class WorkerInfo:
     state = "IDLE" #Can be IDLE, RESIZING, MERGING or DEAD
     missed_keep_alives = 0
 
-    tasks_history = []
-
     #Creates the worker
     def __init__(self, addr, id : int) -> None:
         self.addr = addr
@@ -143,11 +143,6 @@ class WorkerInfo:
 
         #Update the interface
         self.print_interface()
-    
-    #Put the assignment in the history for later
-    def assign_task(self, operation : str, imgs : list):
-        self.state = "MERGING" if operation == "MERGE" else "RESIZING"
-        self.tasks_history.append((operation, imgs))
 
     #Formats for interface
     def __str__(self) -> str:
@@ -264,9 +259,6 @@ class Broker:
 
     def start_server(self):
 
-        #Use a lock to make sure only one thread uses the sendto() method at a time.
-        self.sock_lock = threading.Lock()
-
         #Creates the brokers's server (UDP)
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 
@@ -277,6 +269,10 @@ class Broker:
         self.sock.bind((socket.gethostname(), 1024))
 
         self.put_outout_history(f"Started server at port {1024}.")
+
+        #Creates the message manager, for sendind and reciving messages
+        self.message_manager = MessageManager(self.sock)
+
 
     #Serve clients countinously
     def run(self):
@@ -291,7 +287,14 @@ class Broker:
             while self.running:
 
                 #Gets message from worker
-                message, worker_address = Protocol.receive(self.sock)
+                message, worker_address = self.message_manager.receive()
+                
+                #Requests any pending fragments that there might have
+                self.message_manager.request_fragments()
+
+                #If message is None, then it's being handled by the message_manager. Skip
+                if message == None:
+                    continue
 
                 #Creates a thread for the worker
                 worker_thread = threading.Thread(target = self.handle_message, args = (message, worker_address))
@@ -320,8 +323,7 @@ class Broker:
                     worker.state = "DEAD"
                     self.put_outout_history(f"{worker.addr} is dead.")
                 else:
-                    with self.sock_lock:
-                        Protocol.send(self.sock, worker.addr, KeepAliveMessage())
+                    self.message_manager.send(worker.addr, KeepAliveMessage())
 
             #Makes it so dead workers are not assigned to images
             if some_dead:
@@ -365,8 +367,7 @@ class Broker:
         id = self.workers[addr].id
 
         #Sents hello message back, acknowledging the connection
-        with self.sock_lock:
-            Protocol.send(self.sock, addr, HelloMessage(id)) #Gives the worker it's ID
+        self.message_manager.send(addr, HelloMessage(id)) #Gives the worker it's ID
 
         #Update the interface
         self.put_outout_history(f"{addr} worker just joined.")
@@ -389,8 +390,7 @@ class Broker:
         
         fragment = img.get_fragment(msg.piece)
         reply = FragmentReplyMessage(msg.id, fragment.decode('utf-8'), msg.piece)
-        with self.sock_lock:
-            Protocol.send(self.sock, addr, reply)
+        self.message_manager.send(addr, reply)
 
     #Receives the result of an operation from a worker
     def handle_operation_reply(self, msg : OperationReplyMessage, addr):
@@ -402,42 +402,50 @@ class Broker:
         #If it was a resize...
         if msg.operation == "RESIZE":
 
-            #Get all fragments and reconstructs the image
-            image_base64 = Protocol.request_image(self.sock, addr, msg.id, msg.fragments)
-
-            #Updates the image to the resized varient
-            for img in self.images:
-                if img.id == msg.id:
-                    img.update_image_resized(str.encode(image_base64))
-
-            self.put_outout_history(f"Worker {msg.worker} is done resizing.")
+            #Invokes resize callback when the image is reconstructed
+            self.message_manager.request_image(addr, msg.id, msg.fragments, self.resize_callback)
 
         #If it's a merge
         else:
-            #Get all fragments and reconstructs the image
-            image_base64 = Protocol.request_image(self.sock, addr, msg.id[0], msg.fragments)
+            #Invokes merge callback when the image is reconstructed
+            self.merge_ids = msg.prev_ids
+            self.message_manager.request_image(addr, msg.id[0], msg.fragments, self.merge_callback)
 
-            #Get the images
-            A_img = None
-            B_img = None
-            for img in self.images:
-                if A_img != None and B_img != None:
-                    break
+    #Invoked when all the fragments of the image is collected and the image is constructed
+    def resize_callback(self, request : ImageRequest):
+        #Updates the image to the resized varient
+        for img in self.images:
+            if img.id == request.id:
+                img.update_image_resized(str.encode(request.image_base64))
 
-                if img.id == msg.id[0]:
-                    A_img = img
-                elif img.id == msg.id[1]:
-                    B_img = img
-
-            #Merges the two images
-            A_img.merge(B_img, image_base64)
-            self.images.remove(B_img)
-            self.put_outout_history(f"Worker {msg.worker} is done merging.")
+        self.put_outout_history(f"Worker {request.worker} is done resizing.")
 
         #See if there's a new task for the worker
         self.assign_task()
 
-        pass
+    #Invoked when all the fragments of the image is collected and the image is constructed
+    def merge_callback(self, request : ImageRequest):
+        #Get the images
+        A_img = None
+        B_img = None
+        for img in self.images:
+            if A_img != None and B_img != None:
+                break
+            
+            print(request.id)
+
+            if img.id == self.merge_ids[0]:
+                A_img = img
+            elif img.id == self.merge_ids[1]:
+                B_img = img
+
+        #Merges the two images
+        A_img.merge(B_img, request.image_base64)
+        self.images.remove(B_img)
+        self.put_outout_history(f"Worker {request.worker} is done merging.")
+
+        #See if there's a new task for the worker
+        self.assign_task()
 
     #Invoked whenever a task is completed or a new worker has joined. Sends tasks to workers if needed
     def assign_task(self):
@@ -463,35 +471,32 @@ class Broker:
             if not img.resized and img.worker_responsible == None:
                 #Assign a worker to it
                 worker = idle_workers.pop()
-                worker.assign_task("RESIZE", [img])
+                worker.state = "RESIZE"
                 img.worker_responsible = worker
                 img.resize_start = datetime.now()
 
-                self.put_outout_history(f"Sending '{' + '.join(img.img_names)}' to be resized by Worker {worker.id},")
+                self.put_outout_history(f"Sending '{' + '.join(img.img_names)}' to be resized by Worker {worker.id}.")
+                print("sending to be resized",img.id)
                 #Sends the command to the worker
                 msg = ResizeRequestMessage(img.id,img.fragment_count(), self.height)
-                with self.sock_lock:
-                    Protocol.send(self.sock, worker.addr, msg)
+                
+                self.message_manager.send(worker.addr, msg)
             #Look for merges
             else:
-                next_img = self.images[index + 1 % len(self.images)]
+                next_img = self.images[(index + 1) % len(self.images)]
 
                 #If it is also resized, then merge
                 if next_img != img and next_img.resized:
                     #Assign a worker to it
                     worker = idle_workers.pop()
-                    worker.assign_task("MERGE", [img, next_img])
+                    worker.state = "MERGE"
                     img.worker_responsible = worker
                     next_img.worker_responsible = worker
                     img.merge_start = datetime.now()
 
                     #Asks a worker to merge it
                     msg = MergeRequestMessage((img.id, next_img.id), (img.fragment_count(), next_img.fragment_count()))
-                    with self.sock_lock:
-                        Protocol.send(self.sock, worker.addr, msg)
-                    pass
-
-        pass
+                    self.message_manager.send(worker.addr, msg)
 
     #Returns a list of all workers without tasks
     def get_idle_workers(self) -> list:
@@ -608,8 +613,7 @@ class Broker:
         msg = DoneMessage()
         for w in self.workers.values():
             if w.state != "DEAD":
-                with self.sock_lock:
-                    Protocol.send(self.sock, w.addr, msg)
+                self.message_manager.send(w.addr, msg)
 
         #Shutdown itself
         self.running = False

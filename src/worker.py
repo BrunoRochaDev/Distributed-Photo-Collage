@@ -6,6 +6,8 @@ from datetime import datetime #For making timestamps
 import time #For sleeping (simulate complex work)
 import random #For picking random sleep intervals
 
+from .message_manager import ImageRequest, MessageManager
+
 #For sending and receiving messages
 from .protocol import *
 
@@ -31,12 +33,12 @@ class ImageWrapper:
 
     #Gets the number of fragments this image has
     def fragment_count(self):
-        return math.ceil(len(self.image_encoded) / Protocol.MAX_FRAGMENT)
+        return math.ceil(len(self.image_encoded) / MAX_FRAGMENT)
 
     #Gets an specific fragment
     def get_fragment(self, piece : int) -> bytes:
-        start = piece * Protocol.MAX_FRAGMENT
-        return self.image_encoded[start:start + Protocol.MAX_FRAGMENT]
+        start = piece * MAX_FRAGMENT
+        return self.image_encoded[start:start + MAX_FRAGMENT]
 
     #Convert Image to Base64 
     @classmethod
@@ -54,8 +56,8 @@ class ImageWrapper:
 class Worker:
 
     #Times for sleeping (in seconds) to simulate complex work
-    MAX_SLEEP = 3
-    MIN_SLEEP = 1
+    MAX_SLEEP = 0
+    MIN_SLEEP = 0
 
     #Whether the worker is running or not. Turned off by the broker
     running = True
@@ -73,10 +75,6 @@ class Worker:
     images = {}
 
     def __init__(self, port : int, address : str = socket.gethostname()) -> None:
-        
-        #Use a lock to make sure only one thread uses the sendto() method at a time.
-        self.sock_lock = threading.Lock()
-
         self.broker_sock = (address, port)
 
         #Starts the client and connects to the broker
@@ -92,10 +90,13 @@ class Worker:
         self.sock = socket.socket(family=socket.AF_INET, type=socket.SOCK_DGRAM)
         self.put_outout_history("Starting up client...")
 
+        #Creates the message manager, for sendind and reciving messages
+        self.message_manager = MessageManager(self.sock)
+
         #Sends to broker a hello message
-        with self.sock_lock:
-            Protocol.send(self.sock, self.broker_sock, HelloMessage())
+        self.message_manager.send(self.broker_sock, HelloMessage())
         self.put_outout_history(f"Attemping to connect to broker {self.broker_sock}...")
+
 
     #Wait for commands from the broker
     def run(self):
@@ -104,8 +105,15 @@ class Worker:
         try:
             while self.running:
 
-                #Gets message from worker
-                message, worker_address = Protocol.receive(self.sock)
+                #Gets message from broker
+                message = self.message_manager.receive()[0]
+                
+                #Requests any pending fragments that there might have
+                self.message_manager.request_fragments()
+
+                #If message is None, then it's being handled by the message_manager. Skip
+                if message == None:
+                    continue
 
                 #Creates a thread for the worker
                 worker_thread = threading.Thread(target = self.handle_message, args = (message,))
@@ -143,65 +151,81 @@ class Worker:
 
     #Simply sends the message back so that the broker knows this is alive
     def handle_keep_alive(self, msg : KeepAliveMessage):
-        with self.sock_lock:
-            Protocol.send(self.sock, self.broker_sock, msg)
+        self.message_manager.send(self.broker_sock, msg)
 
     #Firstly collect all the image fragments and then resizes
     def handle_resize_request(self, msg : ResizeRequestMessage):
         self.status = "RESIZING"
         self.put_outout_history("Received a resize operation request. Resizing...")
 
-        #Get all fragments and reconstructs the image
-        image_base64 = Protocol.request_image(self.sock, self.broker_sock, msg.id, msg.fragments)
-        PIL_image = ImageWrapper.decode(image_base64)
+        height = msg.height
+
+        #Invokes merge callback when the image is reconstructed
+        self.message_manager.request_image(self.broker_sock, msg.id, msg.fragments, self.resize_callback)
+
+
+    #Invoked when all the fragments of the image is collected and the image is constructed
+    def resize_callback(self, request : ImageRequest):
+        PIL_image = ImageWrapper.decode(request.image_base64)
 
         #Calculates the new dimension
         width, height = PIL_image.size
         ratio = width/height
 
-        new_width = math.ceil(msg.height * ratio)
-        new_height = math.ceil(msg.height)
+        new_width = math.ceil(height * ratio)
+        new_height = math.ceil(height)
 
         #Resizes the image and stores it in the image dict
         PIL_image = PIL_image.resize((new_width, new_height))
         time.sleep(random.uniform(self.MIN_SLEEP, self.MAX_SLEEP))
-        self.images[msg.id] = ImageWrapper(msg.id, PIL_image)
+        self.images[request.id] = ImageWrapper(request.id, PIL_image)
 
         #Notifies the broker it's done
         self.status = "IDLE"
         self.put_outout_history("Resized the image. Sending it to the broker...")
-        with self.sock_lock:
-            Protocol.send(self.sock, self.broker_sock, OperationReplyMessage("RESIZE",msg.id, self.id, self.images[msg.id].fragment_count()))
-
+        self.message_manager.send(self.broker_sock, OperationReplyMessage("RESIZE",request.id, self.id, self.images[request.id].fragment_count()))
+                
     #Firstly collect all the image fragments and then merges
     def handle_merge_request(self, msg : MergeRequestMessage):
         self.status = "MERGING"
         self.put_outout_history("Received a merge operation request. Merging...")
 
+        #Ugly
+        self.merge_count = 0
+        self.merge_ids = [msg.id[0], msg.id[1]]
 
-        #Get all fragments and reconstructs the image
-        A_image_base64 = Protocol.request_image(self.sock, self.broker_sock, msg.id[0], msg.fragments[0])
-        A_image = ImageWrapper.decode(A_image_base64)
-        time.sleep(random.uniform(self.MIN_SLEEP, self.MAX_SLEEP)) #For simulating delay (TODO)
-        B_image_base64 = Protocol.request_image(self.sock, self.broker_sock, msg.id[1], msg.fragments[1])
-        B_image = ImageWrapper.decode(B_image_base64)
+        #Invokes merge callback when the image is reconstructed
+        self.message_manager.request_image(self.broker_sock, msg.id[0], msg.fragments[0], self.merge_callback)
+        self.message_manager.request_image(self.broker_sock, msg.id[1], msg.fragments[1], self.merge_callback)
 
-        #Merges the images
-        A_image_size = A_image.size
-        B_image_size = B_image.size
-        merged_image = Image.new('RGB',(A_image_size[0] + B_image_size[0], A_image_size[1]), (250,250,250))
-        merged_image.paste(A_image, (0,0))
-        merged_image.paste(B_image, (A_image_size[0],0))
+    #Invoked when all the fragments of the image is collected and the image is constructed
+    def merge_callback(self, request : ImageRequest):
+        
+        #If the counter is even, then image A came through
+        if self.merge_count % 2 == 0:
+           self.A_image = ImageWrapper.decode(request.image_base64)
+        #Second image came through
+        else:
+            B_image = ImageWrapper.decode(request.image_base64)
+            #Merges the images
+            A_image_size = self.A_image.size
+            B_image_size = B_image.size
+            merged_image = Image.new('RGB',(A_image_size[0] + B_image_size[0], A_image_size[1]), (250,250,250))
+            merged_image.paste(self.A_image, (0,0))
+            merged_image.paste(B_image, (A_image_size[0],0))
 
-        #Stores it
-        self.images[msg.id[0]] = ImageWrapper(msg.id, merged_image)
+            #Stores it
+            self.images[request.id[0]] = ImageWrapper(request.id, merged_image)
 
-        #Notifies the broker it's done
-        self.status = "IDLE"
-        self.put_outout_history("Merged the images. Sending it to the broker...")
-        with self.sock_lock:
-            pass
-            Protocol.send(self.sock, self.broker_sock, OperationReplyMessage("MERGE",msg.id, self.id, self.images[msg.id[0]].fragment_count()))
+            #Notifies the broker it's done
+            self.status = "IDLE"
+            self.put_outout_history("Merged the images. Sending it to the broker...")
+            self.message_manager.send(self.broker_sock, OperationReplyMessage("MERGE",request.id, self.id, self.images[request.id[0]].fragment_count(), self.merge_ids))
+
+        #Increase the counter
+        self.merge_count += 1
+
+        pass
 
     #Handles the request for image fragments
     def handle_fragment_request(self, msg : FragmentRequestMessage):
@@ -210,8 +234,7 @@ class Worker:
         
         fragment = img.get_fragment(msg.piece)
         reply = FragmentReplyMessage(msg.id, fragment.decode('utf-8'), msg.piece)
-        with self.sock_lock:
-            Protocol.send(self.sock, self.broker_sock, reply)  
+        self.message_manager.send(self.broker_sock, reply)  
 
     #Powers off by the broker's request
     def handle_done(self):
@@ -222,6 +245,7 @@ class Worker:
     def poweroff(self):
         self.running = False
         self.connected = False
+        self.status = "OFF"
 
         self.put_outout_history("Powering off...")
         self.sock.close()
