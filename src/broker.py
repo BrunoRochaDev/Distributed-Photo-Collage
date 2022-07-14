@@ -27,6 +27,12 @@ class ImageWrapper:
     modified_time = 0
     worker_responsible = None
 
+    #Elapsed time for resizing
+    resize_start = None
+
+    #Elapsed time for merging
+    merge_start = None
+
     #Static method for creating a wrapper object from a single image
     @classmethod
     def create(cls, name : str, path : str):
@@ -62,6 +68,9 @@ class ImageWrapper:
         self.resized = True
         self.image_encoded = new_image
 
+        #Records the completion of the task
+        TaskInfo.register("RESIZE", self.img_names, self.resize_start, self.worker_responsible)
+
     #Gets the number of fragments this image has
     def fragment_count(self):
         return math.ceil(len(self.image_encoded) / Protocol.MAX_FRAGMENT)
@@ -73,9 +82,15 @@ class ImageWrapper:
 
     #Merge with it's neighbour
     def merge(self, neighbour, new_image : str):
+
+        #Records the completion of the task
+        TaskInfo.register("MERGE", [self.img_names, neighbour.img_names], self.merge_start, self.worker_responsible)
+
+        #Merges the image's name too
         self.img_names = self.img_names + neighbour.img_names
         self.set_id()
 
+        #Updates the image
         self.image_encoded = str.encode(new_image)
 
     #Convert Image to Base64 
@@ -138,23 +153,66 @@ class WorkerInfo:
     def __str__(self) -> str:
         return '{}:{:10s} {:10s} {}'.format(self.addr[0], str(self.addr[1]), self.state, f'{self.missed_keep_alives}/{KEEP_ALIVE_TOLERANCE}')
 
+#Class for holding task information
+class TaskInfo:
+
+    #Static list of all tasks
+    history = []
+    
+    #Creates and stores a task info in the static list
+    @classmethod
+    def register(cls, type : str, img_names : list, start_time : datetime, worker : WorkerInfo):
+        task = TaskInfo(type, img_names, start_time, worker)
+        cls.history.append(task)
+
+    #Should use the create method
+    def __init__(self, type : str, img_names : list, start_time : datetime, worker : WorkerInfo) -> None:
+        self.type = type #MERGE or RESIZE
+        self.timestamp = datetime.now()
+        self.img_names = img_names
+        self.elapsed_time = datetime.now() - start_time
+        self.worker = worker
+        pass
+
+    #Gets every task, MERGE or RESIZE
+    @classmethod
+    def get_by_type(cls, type : str) -> list:
+        res = []
+        for t in cls.history:
+            if t.type == type:
+                res.append(t)
+        return res
+    
+    #Gets every worker that completed a task
+    #Returns a dict, where the keys are the workers and the value the amount of task it completed
+    @classmethod
+    def get_workers(cls) -> dict:
+        res = {}
+        for t in cls.history:
+            if t.worker not in res.keys():
+                res[t.worker] = 1
+            else:
+                res[t.worker] += 1
+        return res
+
+    #Formats in a way to be printed when everything's done
+    def __str__(self) -> str:
+        res = ''
+        if self.type == "MERGE":
+            res = f"Images '{' + '.join(self.img_names[0])}' and '{' + '.join(self.img_names[1])}' were merged by Worker {self.worker.id}"
+        else:
+            res = f"Image '{self.img_names[0]}' was resized by Worker {self.worker.id}"
+
+        #Adds the timestamp
+        time = "{:02d}:{:02d}:{:02d}".format(self.timestamp.hour, self.timestamp.minute, self.timestamp.second)
+        return "{:10s} {}".format(time, res)
+    pass
+
 #Actual implementation of the Broker object
 class Broker:
 
     #Whether the broker is running or not. When every job is done, the broker turns itself off.
     running = True
-
-    #region STATISTICS
-
-    #The number of total resize requests done (still counts even if it wasn't completed)
-    count_resizes = 0
-    count_merges = 0
-
-    time_total = 0 #The elapsed time from beginning to end, in seconds
-    time_resizes = [0.0,0.0,0.0] #Minimum, mean and maximum time respectively
-    time_marges = [0.0,0.0,0.0] #Ditto
-
-    #endregion
 
     #List of every worker (and info about them)
     workers = {}
@@ -163,7 +221,6 @@ class Broker:
     #   1. The path to the images folder
     #   2. The height of the merged image should have
     def __init__(self, path : str, height : int) -> None:
-
         #Setup the images before anything else
         self.path = path
         self.height = height
@@ -289,7 +346,15 @@ class Broker:
             self.handle_operation_reply(msg, addr)
 
     #This message means a worker connected to the broker
+    first_join = True #Bool for detecting when the first worker joins
     def handle_hello(self, addr):
+
+        #Records the time when the first worker joined
+        if self.first_join:
+            self.first_join = False
+            self.start_time = datetime.now()
+            #self.done()
+            #return
 
         #Either creates or resurrects the worker
         if addr not in self.workers.keys():
@@ -379,9 +444,8 @@ class Broker:
 
         #If the images were all resized and/or merged...
         if len(self.images) == 1 and self.images[0].resized:
-            self.put_outout_history("All done!")
-            #Turn of the broker
-            self.poweroff()
+            #All tasks were done. All finished!
+            self.done()
             return
 
         #If there are no idle workers, there's nothing to be done
@@ -401,6 +465,7 @@ class Broker:
                 worker = idle_workers.pop()
                 worker.assign_task("RESIZE", [img])
                 img.worker_responsible = worker
+                img.resize_start = datetime.now()
 
                 self.put_outout_history(f"Sending '{' + '.join(img.img_names)}' to be resized by Worker {worker.id},")
                 #Sends the command to the worker
@@ -418,6 +483,7 @@ class Broker:
                     worker.assign_task("MERGE", [img, next_img])
                     img.worker_responsible = worker
                     next_img.worker_responsible = worker
+                    img.merge_start = datetime.now()
 
                     #Asks a worker to merge it
                     msg = MergeRequestMessage((img.id, next_img.id), (img.fragment_count(), next_img.fragment_count()))
@@ -436,6 +502,104 @@ class Broker:
                 res.append(w)
 
         return res
+
+    #Invoked when all images are resized and merged together.
+    #Prints stats to terminal
+    def done(self):
+        
+        #Calculate some stats
+        elapsed_time = (datetime.now() - self.start_time)
+
+        resizes = TaskInfo.get_by_type("RESIZE")
+        merges = TaskInfo.get_by_type("MERGE")
+        workers = TaskInfo.get_workers()
+
+        mean_resizes_count = len(resizes)/len(workers)
+        mean_merges_count = len(merges)/len(workers)
+
+        time_resize_min = None
+        time_resize_max = None
+        time_resize_mean = None
+        for r in resizes:
+            #Get min
+            if time_resize_min == None or r.elapsed_time < time_resize_min:
+                time_resize_min = r.elapsed_time
+            #Get max
+            if time_resize_max == None or r.elapsed_time > time_resize_max:
+                time_resize_max = r.elapsed_time
+            #Get sum
+            if time_resize_mean == None:
+                time_resize_mean = r.elapsed_time
+            else:
+                time_resize_mean += r.elapsed_time
+        #Get the mean from the sum
+        time_resize_mean /= len(resizes)
+
+        time_merge_min = None
+        time_merge_max = None
+        time_merge_mean = None
+        for r in merges:
+            #Get min
+            if time_merge_min == None or r.elapsed_time < time_merge_min:
+                time_merge_min = r.elapsed_time
+            #Get max
+            if time_merge_max == None or r.elapsed_time > time_merge_max:
+                time_merge_max = r.elapsed_time
+            #Get sum
+            if time_merge_mean == None:
+                time_merge_mean = r.elapsed_time
+            else:
+                time_merge_mean += r.elapsed_time
+        #Get the mean from the sum
+        time_merge_mean /= len(merges)
+
+        #TODO: Se uma task falhar e for reiniciada por outro worker, o tempo deve resetar?
+
+        #PRINTS STATS
+        os.system("cls||clear") #Clears on both windows and linux
+        #Broker info
+        print("BROKER\n"+"-"*50)  
+        print(f"Address: {socket.gethostname()}")
+        print("Port: 1024")
+
+        print("\nALL DONE!")  
+        print("\nSTATISTICS:\n"+"-"*50)  
+        print('{:35s} {}'.format("Total resize count:", len(resizes)))
+        print('{:35s} {}'.format("Total merge count:", len(merges)))
+
+        print('{:35s} {:.1f}'.format("Mean resizes per worker:", mean_resizes_count))
+        print('{:35s} {:.1f}'.format("Mean merges per worker:", mean_merges_count))
+
+        print('{:35s} {}    {}    {}'.format("Min, max and mean resize time:", time_resize_min, time_resize_max, time_resize_mean))
+        print('{:35s} {}    {}    {}'.format("Min, max and mean merge time:", time_merge_min, time_merge_max, time_merge_mean))
+
+        print('{:35s} {}'.format("Total elapsed time:", str(elapsed_time)))
+
+        print("\nALL WORKERS:\n"+"-"*50)  
+        for w in self.workers.values():
+
+            task_count = "(Did no tasks)"
+            if w in workers.keys():
+                task_count = f"({workers[w]} task(s))"
+
+            print(f'{str(w.id)}.\t{(w.addr[0]+":"+str(w.addr[1]))} {task_count}')
+        print("\n*Not every worker was necessarily alive up until the end.")  
+
+        print("\nALL TASKS:\n"+"-"*50)  
+        for t in reversed(TaskInfo.history):
+            print(t)   
+        print("\n*Tasks given but not finished by the worker are not listed.")  
+
+        #Opens the final image and saves to disk
+        final_image = ImageWrapper.decode(self.images[0].image_encoded)
+        #final_image.show()
+        print("\nOpening and saving the final image to disk.")  
+
+        #Power off and tells workers to power off too
+        print("\nPowering down...")  
+        self.poweroff()
+
+        pass
 
     #Shutdown the broker and workers
     def poweroff(self):

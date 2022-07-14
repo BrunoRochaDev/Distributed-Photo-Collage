@@ -4,6 +4,7 @@ import threading #For parallelism
 import os #For clearing the console
 from datetime import datetime #For making timestamps
 import time #For sleeping (simulate complex work)
+import random #For picking random sleep intervals
 
 #For sending and receiving messages
 from .protocol import *
@@ -51,6 +52,10 @@ class ImageWrapper:
         return Image.open(buff)
 
 class Worker:
+
+    #Times for sleeping (in seconds) to simulate complex work
+    MAX_SLEEP = 3
+    MIN_SLEEP = 1
 
     #Whether the worker is running or not. Turned off by the broker
     running = True
@@ -157,7 +162,7 @@ class Worker:
 
         #Resizes the image and stores it in the image dict
         PIL_image = PIL_image.resize((new_width, new_height))
-        time.sleep(1)
+        time.sleep(random.uniform(self.MIN_SLEEP, self.MAX_SLEEP))
         self.images[msg.id] = ImageWrapper(msg.id, PIL_image)
 
         #Notifies the broker it's done
@@ -175,7 +180,7 @@ class Worker:
         #Get all fragments and reconstructs the image
         A_image_base64 = Protocol.request_image(self.sock, self.broker_sock, msg.id[0], msg.fragments[0])
         A_image = ImageWrapper.decode(A_image_base64)
-        time.sleep(1) #For simulating delay (TODO)
+        time.sleep(random.uniform(self.MIN_SLEEP, self.MAX_SLEEP)) #For simulating delay (TODO)
         B_image_base64 = Protocol.request_image(self.sock, self.broker_sock, msg.id[1], msg.fragments[1])
         B_image = ImageWrapper.decode(B_image_base64)
 
@@ -236,7 +241,8 @@ class Worker:
         os.system("cls||clear") #Clears on both windows and linux
 
         #Worker info
-        print("WORKER "+(f"(Connected)" if self.connected else "(Not connected)")+"\n"+"-"*47)  
+        print("WORKER "+(f"(Connected)" if self.connected else "(Not connected)")+"\n"+"-"*47)
+        print(f"Port: {self.sock.getsockname()[1]}")
         print(f"Identifer: " + (str(self.id) if self.id != 0 else "N/A"))
         print(f"Broker: " + (f"{self.broker_sock[0]}:{self.broker_sock[1]}" if self.connected else "N/A"))
         print(f"Status: {self.status}")
