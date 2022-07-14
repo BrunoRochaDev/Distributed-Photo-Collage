@@ -62,7 +62,7 @@ class ImageWrapper:
     
     #If the worker is dead, clears it
     def update_worker(self):
-        if self.worker_responsible != None and self.worker_responsible.state == "DEAD":
+        if self.worker_responsible != None and self.worker_responsible.change_state("DEAD"):
             self.worker_responsible = None
 
     #Updates the image (done when a resizing reply comes through)
@@ -91,6 +91,7 @@ class ImageWrapper:
         #Merges the image's name too
         self.img_names = self.img_names + neighbour.img_names
         self.set_id()
+        #self.resized = True #TODO remove?
 
         #Updates the image
         self.image_encoded = str.encode(new_image)
@@ -121,28 +122,33 @@ class ImageWrapper:
 #Keep alive stats
 KEEP_ALIVE_DELAY = 1
 KEEP_ALIVE_TOLERANCE = 6
+TASK_CONFIRM_TOLERANCE = 3
 
 #Class for holding worker info
 class WorkerInfo:
-    
-    #Properties
-    addr = None
-    id = 0
-    state = "IDLE" #Can be IDLE, RESIZING, MERGING or DEAD
-    missed_keep_alives = 0
 
     #Creates the worker
     def __init__(self, addr, id : int) -> None:
         self.addr = addr
         self.id = id
+        self.state = "IDLE" #Can be IDLE, RESIZING, MERGING or DEAD
+        self.missed_keep_alives = 0
+        self.confirmation_pending = False #Whether the worker is yet to confirm it's task
     
     #Tags a dead worker as alive again
     def resurrect(self):
-        self.state = "IDLE"
+        self.change_state("IDLE")
         self.missed_keep_alives = 0
 
         #Update the interface
         self.print_interface()
+
+    def change_state(self, new_state : str):
+        self.state = new_state
+        if new_state == "MERGE" or new_state == "RESIZE":
+            self.confirmation_pending = 0
+        else:
+            self.confirmation_pending = False
 
     #Formats for interface
     def __str__(self) -> str:
@@ -305,7 +311,8 @@ class Broker:
         except KeyboardInterrupt:
             self.poweroff()
 
-    #Sends keep alive messages to every worker periodically. Also deletes workers who are potentially dead
+    #Sends keep alive messages to every worker periodically, as well was detect potentially missed tasks assingment
+    keep_alive_count = 0 #Used for detecting missed tasks
     def send_keep_alive(self):
         while self.running:
 
@@ -320,10 +327,36 @@ class Broker:
                 #If missed too many messages, probably dead. Delete it
                 if worker.missed_keep_alives >= KEEP_ALIVE_TOLERANCE:
                     some_dead = True
-                    worker.state = "DEAD"
-                    self.put_outout_history(f"{worker.addr} is dead.")
+                    worker.change_state("DEAD")
+
+                    #If it had a task, remove it
+                    for img in self.images:
+                        if img.worker_responsible == worker:
+                            img.worker_responsible = None
+                            continue
+
+                    self.put_outout_history(f"Worker {worker.id} is dead.")
+                    self.assign_task() #Try to assign it again
                 else:
                     self.message_manager.send(worker.addr, KeepAliveMessage())
+
+                #If there's a task confirmation pending...
+                if str(worker.confirmation_pending) != False: #Why is 0 == False in python...
+                    worker.confirmation_pending += 1
+
+                    #If waited for too long, remove the task from it
+                    if worker.confirmation_pending < TASK_CONFIRM_TOLERANCE:
+                        continue
+
+                    worker.change_state("IDLE")
+
+                    for img in self.images:
+                        if img.worker_responsible == worker:
+                            img.worker_responsible = None
+                            continue
+
+                    self.put_outout_history(f"Worker {worker.id} missed it's job assignment.")
+                    self.assign_task() #Try to assign it again
 
             #Makes it so dead workers are not assigned to images
             if some_dead:
@@ -342,6 +375,8 @@ class Broker:
             self.handle_hello(addr)
         elif msg.type == "KEEPALIVE":
             self.handle_keep_alive(addr)
+        elif msg.type == "TASKCONFIRM":
+            self.handle_task_confirmation(addr)
         elif msg.type == "FRAGREQUEST":
             self.handle_fragment_request(msg, addr)
         elif msg.type == "OPREPLY":
@@ -370,7 +405,7 @@ class Broker:
         self.message_manager.send(addr, HelloMessage(id)) #Gives the worker it's ID
 
         #Update the interface
-        self.put_outout_history(f"{addr} worker just joined.")
+        self.put_outout_history(f"Worker {id} just joined.")
 
         #Gives it a task if needed
         self.assign_task()
@@ -378,6 +413,10 @@ class Broker:
     #Handles the keep alive by clearing the worker from suspicion for now
     def handle_keep_alive(self, addr):
         self.workers[addr].missed_keep_alives = 0
+
+    #Handles the task confimation, to be sure that the message was not lost
+    def handle_task_confirmation(self, addr):
+        self.workers[addr].confirmation_pending = 0
 
     #Handles the request for image fragments
     def handle_fragment_request(self, msg : FragmentRequestMessage, addr):
@@ -395,9 +434,12 @@ class Broker:
     #Receives the result of an operation from a worker
     def handle_operation_reply(self, msg : OperationReplyMessage, addr):
 
+        #Sends a confirmation that it received the task
+        self.message_manager.send(addr, TaskConfimationMessage())
+
         #Flags that the worker is done with their operation
         worker = self.workers[addr]
-        worker.state = "IDLE"
+        worker.change_state("IDLE")
 
         #If it was a resize...
         if msg.operation == "RESIZE":
@@ -425,31 +467,32 @@ class Broker:
 
     #Invoked when all the fragments of the image is collected and the image is constructed
     def merge_callback(self, request : ImageRequest):
-        #Get the images
-        A_img = None
-        B_img = None
-        for img in self.images:
-            if A_img != None and B_img != None:
-                break
-            
-            print(request.id)
+        try:
+            #Get the images
+            A_img = None
+            B_img = None
+            for img in self.images:
+                if A_img != None and B_img != None:
+                    break
+                
+                print(img.id, self.merge_ids[0], self.merge_ids[1])
 
-            if img.id == self.merge_ids[0]:
-                A_img = img
-            elif img.id == self.merge_ids[1]:
-                B_img = img
+                if img.id == self.merge_ids[0]:
+                    A_img = img
+                elif img.id == self.merge_ids[1]:
+                    B_img = img
 
-        #Merges the two images
-        A_img.merge(B_img, request.image_base64)
-        self.images.remove(B_img)
-        self.put_outout_history(f"Worker {request.worker} is done merging.")
-
+            #Merges the two images
+            A_img.merge(B_img, request.image_base64)
+            self.images.remove(B_img)
+            self.put_outout_history(f"Worker {request.worker} is done merging.")
+        except:
+            pass
         #See if there's a new task for the worker
         self.assign_task()
 
     #Invoked whenever a task is completed or a new worker has joined. Sends tasks to workers if needed
     def assign_task(self):
-
         #If the images were all resized and/or merged...
         if len(self.images) == 1 and self.images[0].resized:
             #All tasks were done. All finished!
@@ -471,16 +514,16 @@ class Broker:
             if not img.resized and img.worker_responsible == None:
                 #Assign a worker to it
                 worker = idle_workers.pop()
-                worker.state = "RESIZE"
+                worker.change_state("RESIZE")
+                worker.confirmation_pending = 0
                 img.worker_responsible = worker
                 img.resize_start = datetime.now()
 
-                self.put_outout_history(f"Sending '{' + '.join(img.img_names)}' to be resized by Worker {worker.id}.")
-                print("sending to be resized",img.id)
                 #Sends the command to the worker
                 msg = ResizeRequestMessage(img.id,img.fragment_count(), self.height)
-                
                 self.message_manager.send(worker.addr, msg)
+
+                self.put_outout_history(f"Assinging worker {worker.id} to resize {img.img_names[0]}.")
             #Look for merges
             else:
                 next_img = self.images[(index + 1) % len(self.images)]
@@ -489,7 +532,8 @@ class Broker:
                 if next_img != img and next_img.resized:
                     #Assign a worker to it
                     worker = idle_workers.pop()
-                    worker.state = "MERGE"
+                    worker.change_state("MERGE")
+                    worker.confirmation_pending = 0
                     img.worker_responsible = worker
                     next_img.worker_responsible = worker
                     img.merge_start = datetime.now()
@@ -497,6 +541,9 @@ class Broker:
                     #Asks a worker to merge it
                     msg = MergeRequestMessage((img.id, next_img.id), (img.fragment_count(), next_img.fragment_count()))
                     self.message_manager.send(worker.addr, msg)
+
+                    self.put_outout_history(f"Assinging worker {worker.id} to merge two images.")
+
 
     #Returns a list of all workers without tasks
     def get_idle_workers(self) -> list:
@@ -597,7 +644,7 @@ class Broker:
 
         #Opens the final image and saves to disk
         final_image = ImageWrapper.decode(self.images[0].image_encoded)
-        #final_image.show()
+        final_image.show()
         print("\nOpening and saving the final image to disk.")  
 
         #Power off and tells workers to power off too

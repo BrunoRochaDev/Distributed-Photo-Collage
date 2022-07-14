@@ -74,6 +74,9 @@ class Worker:
     #The dictionary of the images
     images = {}
 
+    #Whether has a completed tasking pending confirmation
+    pending_task = False
+
     def __init__(self, port : int, address : str = socket.gethostname()) -> None:
         self.broker_sock = (address, port)
 
@@ -88,6 +91,7 @@ class Worker:
 
         #Creates the workers's client (UDP)
         self.sock = socket.socket(family=socket.AF_INET, type=socket.SOCK_DGRAM)
+        self.port = self.sock.getsockname()[1]
         self.put_outout_history("Starting up client...")
 
         #Creates the message manager, for sendind and reciving messages
@@ -130,6 +134,8 @@ class Worker:
             self.handle_hello(msg)
         elif msg.type == "KEEPALIVE":
             self.handle_keep_alive(msg)
+        elif msg.type == "TASKCONFIRM":
+            self.handle_task_confirmation()
         elif msg.type == "RESIZEREQUEST":
             self.handle_resize_request(msg)
         elif msg.type == "MERGEREQUEST":
@@ -153,12 +159,29 @@ class Worker:
     def handle_keep_alive(self, msg : KeepAliveMessage):
         self.message_manager.send(self.broker_sock, msg)
 
+        #If has a pending task, continue sending it until confirmation is given
+        if self.pending_task != False:
+            self.message_manager.send(self.broker_sock, self.pending_task)
+
+    #Handles the task confimation, to be sure that the message was not lost
+    def handle_task_confirmation(self):
+        self.put_outout_history("Received confirmation that task was received.")
+        self.pending_task = False
+
     #Firstly collect all the image fragments and then resizes
     def handle_resize_request(self, msg : ResizeRequestMessage):
+
+        #Can only accept new tasks if the last one was confirmed
+        if self.pending_task != False:
+            return
+
         self.status = "RESIZING"
         self.put_outout_history("Received a resize operation request. Resizing...")
 
         height = msg.height
+
+        #Sends a confirmation that it received the task
+        self.message_manager.send(self.broker_sock, TaskConfimationMessage())
 
         #Invokes merge callback when the image is reconstructed
         self.message_manager.request_image(self.broker_sock, msg.id, msg.fragments, self.resize_callback)
@@ -183,16 +206,25 @@ class Worker:
         #Notifies the broker it's done
         self.status = "IDLE"
         self.put_outout_history("Resized the image. Sending it to the broker...")
-        self.message_manager.send(self.broker_sock, OperationReplyMessage("RESIZE",request.id, self.id, self.images[request.id].fragment_count()))
+        self.pending_task = OperationReplyMessage("RESIZE",request.id, self.id, self.images[request.id].fragment_count())
+        self.message_manager.send(self.broker_sock, self.pending_task)
                 
     #Firstly collect all the image fragments and then merges
     def handle_merge_request(self, msg : MergeRequestMessage):
+
+        #Can only accept new tasks if the last one was confirmed
+        if self.pending_task != False:
+            return
+
         self.status = "MERGING"
         self.put_outout_history("Received a merge operation request. Merging...")
 
         #Ugly
         self.merge_count = 0
         self.merge_ids = [msg.id[0], msg.id[1]]
+
+        #Sends a confirmation that it received the task
+        self.message_manager.send(self.broker_sock, TaskConfimationMessage())
 
         #Invokes merge callback when the image is reconstructed
         self.message_manager.request_image(self.broker_sock, msg.id[0], msg.fragments[0], self.merge_callback)
@@ -220,7 +252,8 @@ class Worker:
             #Notifies the broker it's done
             self.status = "IDLE"
             self.put_outout_history("Merged the images. Sending it to the broker...")
-            self.message_manager.send(self.broker_sock, OperationReplyMessage("MERGE",request.id, self.id, self.images[request.id[0]].fragment_count(), self.merge_ids))
+            self.pending_task = OperationReplyMessage("MERGE",request.id, self.id, self.images[request.id[0]].fragment_count(), self.merge_ids)
+            self.message_manager.send(self.broker_sock, self.pending_task)
 
         #Increase the counter
         self.merge_count += 1
@@ -238,7 +271,7 @@ class Worker:
 
     #Powers off by the broker's request
     def handle_done(self):
-        self.put_outout_history("Received the order to power off by the broker.")
+        self.put_outout_history("Received the order to power off from the broker.")
         self.poweroff()  
 
     #Shutdown the worker
@@ -276,7 +309,7 @@ class Worker:
 
         #Worker info
         print("WORKER "+(f"(Connected)" if self.connected else "(Not connected)")+"\n"+"-"*47)
-        print(f"Port: {self.sock.getsockname()[1]}")
+        print(f"Port: {self.port}")
         print(f"Identifer: " + (str(self.id) if self.id != 0 else "N/A"))
         print(f"Broker: " + (f"{self.broker_sock[0]}:{self.broker_sock[1]}" if self.connected else "N/A"))
         print(f"Status: {self.status}")

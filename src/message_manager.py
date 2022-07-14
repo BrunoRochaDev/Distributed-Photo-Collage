@@ -46,7 +46,7 @@ class MessageManager:
 
     #Sends a message
     def send(self, addr, msg : Message) -> None:
-        #if(msg.type != "FRAGREPLY"):
+        #if(msg.type == "OPREPLY"):
             #print(datetime.now(),"sending", msg.encode())
 
         #Construct the message with the checksum
@@ -86,7 +86,7 @@ class MessageManager:
     #Request the pending fragments
     def request_fragments(self):
 
-        for request in self.request_dict.values():
+        for request in self.request_dict.copy().values():
             for piece in request.fragments_needed():
                 #print(datetime.now(),"requesting fragment", piece)
                 self.send(request.addr, FragmentRequestMessage(request.id, piece))

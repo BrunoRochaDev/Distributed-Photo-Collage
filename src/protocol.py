@@ -25,23 +25,24 @@ class Message:
 
             if type == "HELLO":
                 return HelloMessage(JSON["id"])
-
-            if type == "KEEPALIVE":
+            elif type == "KEEPALIVE":
                 return KeepAliveMessage()
+            elif type == "TASKCONFIRM":
+                return TaskConfimationMessage()
 
-            if type == "RESIZEREQUEST":
+            elif type == "RESIZEREQUEST":
                 return ResizeRequestMessage(JSON["id"], JSON["fragments"], JSON["height"])
-            if type == "MERGEREQUEST":
+            elif type == "MERGEREQUEST":
                 return MergeRequestMessage(JSON["id"], JSON["fragments"])
-            if type == "OPREPLY":
+            elif type == "OPREPLY":
                 return OperationReplyMessage(JSON["operation"], JSON["id"], JSON["worker"], JSON["fragments"], JSON["prev_ids"])
 
-            if type == "FRAGREQUEST":
+            elif type == "FRAGREQUEST":
                 return FragmentRequestMessage(JSON["id"], JSON["piece"])
-            if type == "FRAGREPLY":
+            elif type == "FRAGREPLY":
                 return FragmentReplyMessage(JSON["id"], JSON["data"], JSON["piece"])
 
-            if type == "DONE":
+            elif type == "DONE":
                 return DoneMessage()
 
         except:
@@ -60,6 +61,11 @@ class HelloMessage(Message):
 class KeepAliveMessage(Message):
     def __init__(self):
         self.type = "KEEPALIVE"
+
+#A worker must confirm that he received the task, otherwise it is given to someone else
+class TaskConfimationMessage(Message):
+    def __init__(self) -> None:
+        self.type = "TASKCONFIRM"
 
 #Messages for requesting a worker to do an operation (resize and merge)
 #The request comes with the number of fragments for each image has
