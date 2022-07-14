@@ -23,10 +23,12 @@ class Message:
             if type == "KEEPALIVE":
                 return KeepAliveMessage()
 
-            if type == "RESIZE":
-                return ResizeMessage(JSON["id"], JSON["fragments"], JSON["height"])
+            if type == "RESIZEREQUEST":
+                return ResizeRequestMessage(JSON["id"], JSON["fragments"], JSON["height"])
+            if type == "MERGEREQUEST":
+                return MergeRequestMessage(JSON["id"], JSON["fragments"])
             if type == "OPREPLY":
-                return OperationReplyMessage(JSON["id"], JSON["worker"], JSON["fragments"])
+                return OperationReplyMessage(JSON["operation"], JSON["id"], JSON["worker"], JSON["fragments"])
 
             if type == "FRAGREQUEST":
                 return FragmentRequestMessage(JSON["id"], JSON["piece"])
@@ -53,16 +55,22 @@ class KeepAliveMessage(Message):
 #Messages for requesting a worker to do an operation (resize and merge)
 #The request comes with the number of fragments for each image has
 #Worker must request fragments individually. This is done because UDP is an unreliable protocol
-class ResizeMessage(Message):
+class ResizeRequestMessage(Message):
     def __init__(self,  id :str, fragments : int, height : int):
-        self.type = "RESIZE"
+        self.type = "RESIZEREQUEST"
         self.height = height
         self.id = id #The name of the file
         self.fragments = fragments
+class MergeRequestMessage(Message):
+    def __init__(self,  id :tuple, fragments : tuple):
+        self.type = "MERGEREQUEST"
+        self.id = id #A tuple, containing the id of both images
+        self.fragments = fragments #A tuple, containing the fragment count of both images
 class OperationReplyMessage(Message):
-    def __init__(self, id : str, worker : int, fragments: int):
+    def __init__(self, operation : str, id : str, worker : int, fragments: int):
         self.type = "OPREPLY"
-        self.id = id
+        self.operation = operation #RESIZE or MERGE
+        self.id = id #a tuple or a int, depending on operation
         self.worker = worker
         self.fragments = fragments
         pass

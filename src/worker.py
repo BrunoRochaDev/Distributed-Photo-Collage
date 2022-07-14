@@ -117,8 +117,10 @@ class Worker:
             self.handle_hello(msg)
         elif msg.type == "KEEPALIVE":
             self.handle_keep_alive(msg)
-        elif msg.type == "RESIZE":
-            self.handle_operation_request(msg)
+        elif msg.type == "RESIZEREQUEST":
+            self.handle_resize_request(msg)
+        elif msg.type == "MERGEREQUEST":
+            self.handle_merge_request(msg)
         elif msg.type == "FRAGREQUEST":
             self.handle_fragment_request(msg)
 
@@ -137,8 +139,8 @@ class Worker:
         with self.sock_lock:
             Protocol.send(self.sock, self.broker_sock, msg)
 
-    #Firstly collect all the image fragments and then does the operation
-    def handle_operation_request(self, msg : ResizeMessage):
+    #Firstly collect all the image fragments and then resizes
+    def handle_resize_request(self, msg : ResizeRequestMessage):
         self.status = "RESIZING"
         self.put_outout_history("Received a resize operation request. Resizing...")
 
@@ -162,7 +164,37 @@ class Worker:
         self.status = "IDLE"
         self.put_outout_history("Resized the image. Sending it to the broker...")
         with self.sock_lock:
-            Protocol.send(self.sock, self.broker_sock, OperationReplyMessage(msg.id, self.id, self.images[msg.id].fragment_count()))
+            Protocol.send(self.sock, self.broker_sock, OperationReplyMessage("RESIZE",msg.id, self.id, self.images[msg.id].fragment_count()))
+
+    #Firstly collect all the image fragments and then merges
+    def handle_merge_request(self, msg : MergeRequestMessage):
+        self.status = "MERGING"
+        self.put_outout_history("Received a merge operation request. Merging...")
+
+
+        #Get all fragments and reconstructs the image
+        A_image_base64 = Protocol.request_image(self.sock, self.broker_sock, msg.id[0], msg.fragments[0])
+        A_image = ImageWrapper.decode(A_image_base64)
+        time.sleep(1) #For simulating delay (TODO)
+        B_image_base64 = Protocol.request_image(self.sock, self.broker_sock, msg.id[1], msg.fragments[1])
+        B_image = ImageWrapper.decode(B_image_base64)
+
+        #Merges the images
+        A_image_size = A_image.size
+        B_image_size = B_image.size
+        merged_image = Image.new('RGB',(A_image_size[0] + B_image_size[0], A_image_size[1]), (250,250,250))
+        merged_image.paste(A_image, (0,0))
+        merged_image.paste(B_image, (A_image_size[0],0))
+
+        #Stores it
+        self.images[msg.id[0]] = ImageWrapper(msg.id, merged_image)
+
+        #Notifies the broker it's done
+        self.status = "IDLE"
+        self.put_outout_history("Merged the images. Sending it to the broker...")
+        with self.sock_lock:
+            pass
+            Protocol.send(self.sock, self.broker_sock, OperationReplyMessage("MERGE",msg.id, self.id, self.images[msg.id[0]].fragment_count()))
 
     #Handles the request for image fragments
     def handle_fragment_request(self, msg : FragmentRequestMessage):

@@ -14,7 +14,7 @@ from io import BytesIO #For encoding images
 import math #pretty much only for rounding up numbers
 
 #For sending and receiving messages
-from .protocol import FragmentReplyMessage, FragmentRequestMessage, HelloMessage, KeepAliveMessage, Message, OperationReplyMessage, Protocol, ResizeMessage
+from .protocol import FragmentReplyMessage, FragmentRequestMessage, HelloMessage, KeepAliveMessage, MergeRequestMessage, Message, OperationReplyMessage, Protocol, ResizeRequestMessage
 
 #Wrapper class for holding image data for ease of access
 class ImageWrapper:
@@ -72,12 +72,11 @@ class ImageWrapper:
         return self.image_encoded[start:start + Protocol.MAX_FRAGMENT]
 
     #Merge with it's neighbour
-    def merge(self, neighbour): #Returns a tuple of both images and the new id
+    def merge(self, neighbour, new_image : str):
         self.img_names = self.img_names + neighbour.img_names
         self.set_id()
-        self.resized = False
 
-        return (self.image_encoded, neighbour.image_encoded), self.id
+        self.image_encoded = str.encode(new_image)
 
     #Convert Image to Base64 
     @classmethod
@@ -131,9 +130,9 @@ class WorkerInfo:
         self.print_interface()
     
     #Put the assignment in the history for later
-    def assign_task(self, operation : str, img : ImageWrapper):
+    def assign_task(self, operation : str, imgs : list):
         self.state = "MERGING" if operation == "MERGE" else "RESIZING"
-        self.tasks_history.append((operation, img))
+        self.tasks_history.append((operation, imgs))
 
     #Formats for interface
     def __str__(self) -> str:
@@ -335,15 +334,40 @@ class Broker:
         worker = self.workers[addr]
         worker.state = "IDLE"
 
-        #Get all fragments and reconstructs the image
-        image_base64 = Protocol.request_image(self.sock, addr, msg.id, msg.fragments)
+        #If it was a resize...
+        if msg.operation == "RESIZE":
 
-        #Updates the image to the resized varient
-        for img in self.images:
-            if img.id == msg.id:
-                img.update_image_resized(image_base64)
+            #Get all fragments and reconstructs the image
+            image_base64 = Protocol.request_image(self.sock, addr, msg.id, msg.fragments)
 
-        self.put_outout_history(f"Worker {msg.worker} is done with it's operation.")
+            #Updates the image to the resized varient
+            for img in self.images:
+                if img.id == msg.id:
+                    img.update_image_resized(str.encode(image_base64))
+
+            self.put_outout_history(f"Worker {msg.worker} is done resizing.")
+
+        #If it's a merge
+        else:
+            #Get all fragments and reconstructs the image
+            image_base64 = Protocol.request_image(self.sock, addr, msg.id[0], msg.fragments)
+
+            #Get the images
+            A_img = None
+            B_img = None
+            for img in self.images:
+                if A_img != None and B_img != None:
+                    break
+
+                if img.id == msg.id[0]:
+                    A_img = img
+                elif img.id == msg.id[1]:
+                    B_img = img
+
+            #Merges the two images
+            A_img.merge(B_img, image_base64)
+            self.images.remove(B_img)
+            self.put_outout_history(f"Worker {msg.worker} is done merging.")
 
         #See if there's a new task for the worker
         self.assign_task()
@@ -375,12 +399,12 @@ class Broker:
             if not img.resized and img.worker_responsible == None:
                 #Assign a worker to it
                 worker = idle_workers.pop()
-                worker.assign_task("RESIZE", img)
+                worker.assign_task("RESIZE", [img])
                 img.worker_responsible = worker
 
                 self.put_outout_history(f"Sending '{' + '.join(img.img_names)}' to be resized by Worker {worker.id},")
                 #Sends the command to the worker
-                msg = ResizeMessage(img.id,img.fragment_count(), self.height)
+                msg = ResizeRequestMessage(img.id,img.fragment_count(), self.height)
                 with self.sock_lock:
                     Protocol.send(self.sock, worker.addr, msg)
             #Look for merges
@@ -389,9 +413,16 @@ class Broker:
 
                 #If it is also resized, then merge
                 if next_img != img and next_img.resized:
-                    img.merge(next_img)
-                    self.images.remove(next_img)
-                    self.put_outout_history(f"Merged two images.")
+                    #Assign a worker to it
+                    worker = idle_workers.pop()
+                    worker.assign_task("MERGE", [img, next_img])
+                    img.worker_responsible = worker
+                    next_img.worker_responsible = worker
+
+                    #Asks a worker to merge it
+                    msg = MergeRequestMessage((img.id, next_img.id), (img.fragment_count(), next_img.fragment_count()))
+                    with self.sock_lock:
+                        Protocol.send(self.sock, worker.addr, msg)
                     pass
 
         pass
