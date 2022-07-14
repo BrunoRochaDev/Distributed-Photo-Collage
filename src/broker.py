@@ -14,7 +14,7 @@ from io import BytesIO #For encoding images
 import math #pretty much only for rounding up numbers
 
 #For sending and receiving messages
-from .protocol import FragmentReplyMessage, FragmentRequestMessage, HelloMessage, KeepAliveMessage, MergeRequestMessage, Message, OperationReplyMessage, Protocol, ResizeRequestMessage
+from .protocol import DoneMessage, FragmentReplyMessage, FragmentRequestMessage, HelloMessage, KeepAliveMessage, MergeRequestMessage, Message, OperationReplyMessage, Protocol, ResizeRequestMessage
 
 #Wrapper class for holding image data for ease of access
 class ImageWrapper:
@@ -603,6 +603,15 @@ class Broker:
 
     #Shutdown the broker and workers
     def poweroff(self):
+
+        #Shutdown all workers
+        msg = DoneMessage()
+        for w in self.workers.values():
+            if w.state != "DEAD":
+                with self.sock_lock:
+                    Protocol.send(self.sock, w.addr, msg)
+
+        #Shutdown itself
         self.running = False
         self.sock.close()
 

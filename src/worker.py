@@ -67,7 +67,7 @@ class Worker:
     id = 0
 
     #The current status of the worker. Can be either IDLE, MERGING, RESIZING or DONE 
-    status = "IDLE"
+    status = "OFF"
 
     #The dictionary of the images
     images = {}
@@ -128,13 +128,15 @@ class Worker:
             self.handle_merge_request(msg)
         elif msg.type == "FRAGREQUEST":
             self.handle_fragment_request(msg)
-
+        elif msg.type == "DONE":
+            self.handle_done()
     #This message means the broker has accepted the connection
     def handle_hello(self,msg : HelloMessage):
 
         #Worker has acknowledged the connection and received an ID
         self.connected = True
         self.id = msg.id
+        self.status = "IDLE"
 
         #Update the interface
         self.put_outout_history("Broker has acknowledged the connection.")
@@ -211,9 +213,17 @@ class Worker:
         with self.sock_lock:
             Protocol.send(self.sock, self.broker_sock, reply)  
 
+    #Powers off by the broker's request
+    def handle_done(self):
+        self.put_outout_history("Received the order to power off by the broker.")
+        self.poweroff()  
+
     #Shutdown the worker
     def poweroff(self):
         self.running = False
+        self.connected = False
+
+        self.put_outout_history("Powering off...")
         self.sock.close()
 
     #region INTERFACE

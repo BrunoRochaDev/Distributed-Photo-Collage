@@ -35,6 +35,9 @@ class Message:
             if type == "FRAGREPLY":
                 return FragmentReplyMessage(JSON["id"], JSON["data"], JSON["piece"])
 
+            if type == "DONE":
+                return DoneMessage()
+
         except:
             raise ValueError("Could not parse JSON to message.")
         pass
@@ -88,6 +91,12 @@ class FragmentReplyMessage(Message):
         self.id = id
         self.data = data
         self.piece = piece
+
+
+#Message sent by the broker saying that the workers should powerdown
+class DoneMessage(Message):
+    def __init__(self) -> None:
+        self.type = "DONE"
 
 #The protocols for sending text messages and images
 class Protocol:
