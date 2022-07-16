@@ -458,12 +458,12 @@ class Broker:
         if msg.operation == "RESIZE":
 
             #Invokes resize callback when the image is reconstructed
-            self.message_manager.request_image(addr, msg.id, msg.fragments, self.resize_callback)
+            self.message_manager.request_image(addr, msg.id, msg.fragments, self.resize_callback, None, worker.id)
 
         #If it's a merge
         else:
             #Invokes merge callback when the image is reconstructed
-            self.message_manager.request_image(addr, msg.id[0], msg.fragments, self.merge_callback, {"merge_ids" : msg.prev_ids})
+            self.message_manager.request_image(addr, msg.id[0], msg.fragments, self.merge_callback, {"merge_ids" : msg.prev_ids}, worker.id)
 
     #Invoked when all the fragments of the image is collected and the image is constructed
     def resize_callback(self, request : ImageRequest):
