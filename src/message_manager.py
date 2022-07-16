@@ -79,7 +79,6 @@ class MessageManager:
 
     #
     def request_image(self, addr, id :str, fragment_count : int, callback, data : dict = None, worker : int = 0) -> str:
-        #print(datetime.now(),"requesting img", id)
         #Stores the new request in the dict
         request_obj = ImageRequest(addr, id, fragment_count, callback, data, worker)
         self.request_dict[id] = request_obj
@@ -89,21 +88,27 @@ class MessageManager:
 
         for request in self.request_dict.copy().values():
             for piece in request.fragments_needed():
-                #print(datetime.now(),"requesting fragment", piece)
                 self.send(request.addr, FragmentRequestMessage(request.id, piece))
         pass
 
     #When receives a fragment, shares it w/ requesters
     def received_fragment(self, msg : FragmentReplyMessage):
-        if(msg.id not in self.request_dict.keys()):
+
+        #It can be either a list or int
+        if type(msg.id) == list:
+            task_id = (msg.id[0], msg.id[1])
+        else:
+            task_id = msg.id
+
+        if(task_id not in self.request_dict.keys()):
             return
         
         piece = int(msg.piece)
 
-        request = self.request_dict[msg.id]
+        request = self.request_dict[task_id]
         completed = request.add_fragment(piece, msg.data)
 
         #Remove from list if completed
         if completed:
-            self.request_dict.pop(msg.id)
+            self.request_dict.pop(task_id)
             #print(datetime.now(),"completed",msg.id)

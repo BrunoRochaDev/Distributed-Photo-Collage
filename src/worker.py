@@ -180,6 +180,7 @@ class Worker:
         self.put_outout_history("Received a resize operation request. Resizing...")
 
         #Sends a confirmation that it received the task
+        #TODO: Colocar id da tarefa na confirmation?
         self.message_manager.send(self.broker_sock, TaskConfimationMessage())
 
         #Invokes merge callback when the image is reconstructed
@@ -209,7 +210,7 @@ class Worker:
         #Notifies the broker it's done
         self.status = "IDLE"
         self.put_outout_history("Resized the image. Sending it to the broker...")
-        self.pending_task = OperationReplyMessage("RESIZE",request.id, self.id, self.images[request.id].fragment_count())
+        self.pending_task = OperationReplyMessage(request.id, self.images[request.id].fragment_count())
         self.message_manager.send(self.broker_sock, self.pending_task)
                 
     #Firstly collect all the image fragments and then merges
@@ -222,57 +223,57 @@ class Worker:
         self.status = "MERGING"
         self.put_outout_history("Received a merge operation request. Merging...")
 
-        #Ugly
-        self.merge_count = 0
-
         #Sends a confirmation that it received the task
         self.message_manager.send(self.broker_sock, TaskConfimationMessage())
 
+        self.A_image : Image = None
+        self.B_image : Image = None
+
         #Invokes merge callback when the image is reconstructed
-        self.message_manager.request_image(self.broker_sock, msg.id[0], msg.fragments[0], self.merge_callback, {"merge_ids" : [msg.id[0], msg.id[1]] })
-        self.message_manager.request_image(self.broker_sock, msg.id[1], msg.fragments[1], self.merge_callback, {"merge_ids" : [msg.id[0], msg.id[1]] })
+        self.message_manager.request_image(self.broker_sock, (msg.id,0), msg.fragments[0], self.merge_callback)
+        self.message_manager.request_image(self.broker_sock, (msg.id,1), msg.fragments[1], self.merge_callback)
 
     #Invoked when all the fragments of the image is collected and the image is constructed
+    #Waits until both images were reconstructed to merge it
     def merge_callback(self, request : ImageRequest):
-        
-        #If the counter is even, then image A came through
-        if self.merge_count % 2 == 0:
+        #Reconstruct the image...
+        if request.id[1] == 0:
            self.A_image = ImageWrapper.decode(request.image_base64)
-        #Second image came through
         else:
-            #Gets the merge_ids from request
-            merge_ids = request.data["merge_ids"]
+            self.B_image = ImageWrapper.decode(request.image_base64)
 
-            B_image = ImageWrapper.decode(request.image_base64)
-            #Merges the images
-            A_image_size = self.A_image.size
-            B_image_size = B_image.size
+        #When both images are reconstructed, then merge
+        if self.A_image != None and self.B_image != None:
+            self.merge(request)
 
-            #Try to merge the images, sometimes "mage file is truncated" is thrown
-            try:
-                merged_image = Image.new('RGB',(A_image_size[0] + B_image_size[0], A_image_size[1]), (250,250,250))
-                merged_image.paste(self.A_image, (0,0))
-                merged_image.paste(B_image, (A_image_size[0],0))
-            except:
-                self.put_outout_history("An error occured while merging. Potential data corruption")
 
-            #Stores it
-            self.images[request.id[0]] = ImageWrapper(request.id, merged_image)
+    #Finally merges after both images have been reconstructed
+    def merge(self, request : ImageRequest):
+        #Merges the images
+        A_image_size = self.A_image.size
+        B_image_size = self.B_image.size
 
-            #Notifies the broker it's done
-            self.status = "IDLE"
-            self.put_outout_history("Merged the images. Sending it to the broker...")
-            self.pending_task = OperationReplyMessage("MERGE",request.id, self.id, self.images[request.id[0]].fragment_count(), merge_ids)
-            self.message_manager.send(self.broker_sock, self.pending_task)
+        #Try to merge the images, sometimes "mage file is truncated" is thrown
+        try:
+            merged_image = Image.new('RGB',(A_image_size[0] + B_image_size[0], A_image_size[1]), (250,250,250))
+            merged_image.paste(self.A_image, (0,0))
+            merged_image.paste(self.B_image, (A_image_size[0],0))
+        except:
+            self.put_outout_history("An error occured while merging. Potential data corruption")
 
-        #Increase the counter
-        self.merge_count += 1
+        #Stores it
+        self.images[request.id[0]] = ImageWrapper(request.id, merged_image)
 
-        pass
+        #Notifies the broker it's done
+        self.status = "IDLE"
+        self.put_outout_history("Merged the images. Sending it to the broker...")
+        self.pending_task = OperationReplyMessage(request.id, self.images[request.id[0]].fragment_count())
+        self.message_manager.send(self.broker_sock, self.pending_task)
 
     #Handles the request for image fragments
     def handle_fragment_request(self, msg : FragmentRequestMessage):
         #Sends back the requested piece
+
         img = self.images[msg.id]
         
         fragment = img.get_fragment(msg.piece)
@@ -315,6 +316,7 @@ class Worker:
 
     #Prints the interface
     def print_interface(self) -> None:
+        #return
         os.system("cls||clear") #Clears on both windows and linux
 
         #Worker info

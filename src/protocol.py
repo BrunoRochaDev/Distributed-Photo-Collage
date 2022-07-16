@@ -35,7 +35,7 @@ class Message:
             elif type == "MERGEREQUEST":
                 return MergeRequestMessage(JSON["id"], JSON["fragments"])
             elif type == "OPREPLY":
-                return OperationReplyMessage(JSON["operation"], JSON["id"], JSON["worker"], JSON["fragments"], JSON["prev_ids"])
+                return OperationReplyMessage(JSON["id"], JSON["fragments"])
 
             elif type == "FRAGREQUEST":
                 return FragmentRequestMessage(JSON["id"], JSON["piece"])
@@ -74,21 +74,18 @@ class ResizeRequestMessage(Message):
     def __init__(self,  id :str, fragments : int, height : int):
         self.type = "RESIZEREQUEST"
         self.height = height
-        self.id = id #The name of the file
+        self.id = id #The id of the task
         self.fragments = fragments
 class MergeRequestMessage(Message):
     def __init__(self,  id :tuple, fragments : tuple):
         self.type = "MERGEREQUEST"
-        self.id = id #A tuple, containing the id of both images
+        self.id = id #The id of the task
         self.fragments = fragments #A tuple, containing the fragment count of both images
 class OperationReplyMessage(Message):
-    def __init__(self, operation : str, id : str, worker : int, fragments: int, prev_ids : list = []):
+    def __init__(self, id : str, fragments: int):
         self.type = "OPREPLY"
-        self.operation = operation #RESIZE or MERGE
-        self.id = id #a tuple or a int, depending on operation
-        self.worker = worker
+        self.id = id #the id of the task
         self.fragments = fragments
-        self.prev_ids = prev_ids #The id of the images before the merge (only applicable to MERGE)
         pass
 
 #For requesting and receiving fragments
@@ -96,7 +93,7 @@ class OperationReplyMessage(Message):
 class FragmentRequestMessage(Message):
     def __init__(self, id : str, piece : int):
         self.type = "FRAGREQUEST"
-        self.id = id
+        self.id = id #A tuple, containing the task id and the image index
         self.piece = piece
 class FragmentReplyMessage(Message):
     def __init__(self, id : str, data : str, piece : int):

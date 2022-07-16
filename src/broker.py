@@ -1,3 +1,4 @@
+from heapq import merge
 import os #For managing files
 import errno #For error handling
 
@@ -14,65 +15,47 @@ from io import BytesIO #For encoding images
 
 import math #pretty much only for rounding up numbers
 
+import itertools #For auto incrementing IDs
+
 from .message_manager import ImageRequest, MessageManager
 
 #For sending and receiving messages
 from .protocol import *
 
+#Keep alive stats
+KEEP_ALIVE_DELAY = 1
+KEEP_ALIVE_TOLERANCE = 6
+TASK_CONFIRM_TOLERANCE = 3
+
 #Wrapper class for holding image data for ease of access
 class ImageWrapper:
 
-    #Properties
-    img_names = []
-    id = "" #A hash
-    image_encoded = b""
-    resized = False
-    modified_time = 0
-    worker_responsible = None
-
-    #Elapsed time for resizing
-    resize_start = None
-
-    #Elapsed time for merging
-    merge_start = None
-
-    #Static method for creating a wrapper object from a single image
     @classmethod
-    def create(cls, name : str, path : str):
-
-        #The object to be created
+    def create(cls, name : str, path : str) -> object:
         img = ImageWrapper()
 
-        #The id and names of the images this object is composed of
-        img.img_names = [name]
-        img.set_id()
+        img.name = name
 
         #Encodes the image to base64
         #https://stackoverflow.com/questions/52411503/convert-image-to-base64-using-python-pil
         PIL_image = Image.open(path)
         img.image_encoded = ImageWrapper.encode(PIL_image)
 
-        #The time the file was last modified. Used for sorting
-        img.modified_time = os.stat(path).st_mtime
+        img.modification_time = os.stat(path).st_mtime
+        img.resized = False
+        img.merged = None #Pointer to a merged image in which this is a part of
+
+        img.task = None #Not associated with any tasks when created
 
         return img
 
-    #Combines the different names into an id
-    def set_id(self) -> str:
-        self.id = str(hash("".join(self.img_names)))[1:10]
-    
-    #If the worker is dead, clears it
-    def update_worker(self):
-        if self.worker_responsible != None and self.worker_responsible.change_state("DEAD"):
-            self.worker_responsible = None
+    def get_encoded(self) -> str:
+        return self.merged.get_encoded() if self.merged != None else self.image_encoded
 
     #Updates the image (done when a resizing reply comes through)
     def update_image_resized(self, new_image : str):
         self.resized = True
         self.image_encoded = new_image
-
-        #Records the completion of the task
-        TaskInfo.register("RESIZE", self.img_names, self.resize_start, self.worker_responsible)
 
     #Gets the number of fragments this image has
     def fragment_count(self):
@@ -83,19 +66,28 @@ class ImageWrapper:
         start = piece * MAX_FRAGMENT
         return self.image_encoded[start:start + MAX_FRAGMENT]
 
-    #Merge with it's neighbour
-    def merge(self, neighbour, new_image : str):
+    #Merges images together
+    #In actuallity, it just points to a new image
+    @classmethod
+    def merge(self, images : list, new_image : str):
 
-        #Records the completion of the task
-        TaskInfo.register("MERGE", [self.img_names, neighbour.img_names], self.merge_start, self.worker_responsible)
+        merged_image = ImageWrapper()
+        merged_image.name = ' + '.join(img.name for img in images)
+        merged_image.resized = True
+        merged_image.task = None
+        merged_image.merged = None
 
-        #Merges the image's name too
-        self.img_names = self.img_names + neighbour.img_names
-        self.set_id()
-        #self.resized = True #TODO remove?
+        merged_image.image_encoded = str.encode(new_image)
 
-        #Updates the image
-        self.image_encoded = str.encode(new_image)
+        for img in images:
+            img.merged = merged_image
+
+    #Recursivaly finds terminal image
+    def get_terminal_images(self) -> object:
+        if self.merged == None:
+            return self
+        else:
+            return self.merged.get_terminal_images()
 
     #Convert Image to Base64 
     @classmethod
@@ -113,17 +105,14 @@ class ImageWrapper:
     #Formats for interface
     def __str__(self) -> str:
         state = ""
-        if self.resized:
+        if self.merged != None:
+            state = "MERGED"
+        elif self.resized:
             state = "RESIZED"
         else:
-            state = "ASSIGNED" if self.worker_responsible != None else "PENDING"
+            state = "ASSIGNED" if self.task != None else "PENDING"
 
-        return '{:13s} {:3s}'.format(state, ' + '.join(self.img_names))
-
-#Keep alive stats
-KEEP_ALIVE_DELAY = 1
-KEEP_ALIVE_TOLERANCE = 6
-TASK_CONFIRM_TOLERANCE = 3
+        return '{:13s} {:3s}'.format(state, self.name)
 
 #Class for holding worker info
 class WorkerInfo:
@@ -134,55 +123,99 @@ class WorkerInfo:
         self.id = id
         self.state = "IDLE" #Can be IDLE, RESIZING, MERGING or DEAD
         self.missed_keep_alives = 0
-        self.confirmation_pending = False #Whether the worker is yet to confirm it's task
+        self.task = None #Starts with no task
     
-    #Tags a dead worker as alive again
-    def resurrect(self):
-        self.change_state("IDLE")
-        self.missed_keep_alives = 0
+    def kill(self):
+        #If it had a task, remove it
+        if self.task != None:
+            self.task.denied()
 
-        #Update the interface
-        self.print_interface()
+        self.state = "DEAD"
 
-    def change_state(self, new_state : str):
-        self.state = new_state
-        if new_state == "MERGE" or new_state == "RESIZE":
-            self.confirmation_pending = 0
+    #Should NOT be called manually, it's called automatically when a task instance is created
+    def assign_task(self, task):
+        self.task = task
+
+        if task == None:
+            self.state = "IDLE"
         else:
-            self.confirmation_pending = False
+            self.state = task.type
 
     #Formats for interface
     def __str__(self) -> str:
         return '{}:{:10s} {:10s} {}'.format(self.addr[0], str(self.addr[1]), self.state, f'{self.missed_keep_alives}/{KEEP_ALIVE_TOLERANCE}')
 
-#Class for holding task information
-class TaskInfo:
+class Task:
 
-    #Static list of all tasks
+    #Static list of all COMPLETED tasks
     history = []
 
-    resizes_count = 0
-    merges_count = 0
-    
-    #Creates and stores a task info in the static list
+    current_tasks = {}
+
+    id_iter = itertools.count()
+
+    merge_count = 0
+    resize_count = 0
+
     @classmethod
-    def register(cls, type : str, img_names : list, start_time : datetime, worker : WorkerInfo):
-        task = TaskInfo(type, img_names, start_time, worker)
-        cls.history.append(task)
+    def register(cls, type : str, images : tuple, worker : WorkerInfo) -> object:
+        task = Task(type, images, worker)
+        cls.current_tasks[task.id] = task
+        return task
 
-        if type == "MERGE":
-            cls.merges_count += 1
-        else:
-            cls.resizes_count += 1
+    def __init__(self, type : str, images : tuple, worker : WorkerInfo) -> None:
 
-    #Should use the create method
-    def __init__(self, type : str, img_names : list, start_time : datetime, worker : WorkerInfo) -> None:
-        self.type = type #MERGE or RESIZE
+        self.id = next(Task.id_iter) #Thread safe
         self.timestamp = datetime.now()
-        self.img_names = img_names
-        self.elapsed_time = datetime.now() - start_time
+
+        self.type = type
+
+        #Assign itself as the image's task
+        self.images = images
+        for img in self.images:
+            img.task = self
+
+        #Assign itself as the worker's task
         self.worker = worker
-        pass
+        self.worker.assign_task(self)
+
+        self.start_time = datetime.now()
+
+        self.confirmed = False
+        self.missed_confirmations = 0
+        self.completed = False
+
+    def confirm(self):
+        self.confirmed = True
+
+    #Returns whether the task was denied or not
+    def missed_confirm(self) -> bool:
+        self.missed_confirmations += 1
+
+        if self.missed_confirmations > TASK_CONFIRM_TOLERANCE:
+            self.denied()
+
+    def denied(self):
+        self.confirmed = False
+        self.worker.assign_task(None)
+        for img in self.images:
+            img.task = None
+
+    def complete(self):
+        self.complete = True
+        self.elapsed_time = datetime.now() - self.start_time
+
+        if self.type == "MERGE":
+            type(self).merge_count += 1
+        else:
+            type(self).resize_count += 1
+
+        #Frees the workers and images
+        self.worker.assign_task(None)
+        for img in self.images:
+            img.task = None
+
+        type(self).history.append(self)
 
     #Gets every task, MERGE or RESIZE
     @classmethod
@@ -192,7 +225,7 @@ class TaskInfo:
             if t.type == type:
                 res.append(t)
         return res
-    
+
     #Gets every worker that completed a task
     #Returns a dict, where the keys are the workers and the value the amount of task it completed
     @classmethod
@@ -209,9 +242,9 @@ class TaskInfo:
     def __str__(self) -> str:
         res = ''
         if self.type == "MERGE":
-            res = f"Images '{' + '.join(self.img_names[0])}' and '{' + '.join(self.img_names[1])}' were merged by Worker {self.worker.id}"
+            res = f"Worker {self.worker.id} merged '{self.images[0].name}' with {self.images[1].name}"
         else:
-            res = f"Image '{self.img_names[0]}' was resized by Worker {self.worker.id}"
+            res = f"Worker {self.worker.id} reiszed '{self.images[0].name}'"
 
         #Adds the timestamp
         time = "{:02d}:{:02d}:{:02d}".format(self.timestamp.hour, self.timestamp.minute, self.timestamp.second)
@@ -265,7 +298,7 @@ class Broker:
                 self.images.append(ImageWrapper.create(filename, f))
 
         #Sorts lists by date of last modification
-        self.images.sort(key=lambda x: x.modified_time, reverse=True)
+        self.images.sort(key=lambda x: x.modification_time, reverse=True)
 
         #Print result
         self.image_count = len(self.images)
@@ -327,7 +360,6 @@ class Broker:
         while self.running:
 
             #Evaluate every worker
-            some_dead = False
             for worker in self.workers.values():
                 if worker.state == 'DEAD':
                     continue
@@ -336,42 +368,20 @@ class Broker:
 
                 #If missed too many messages, probably dead. Delete it
                 if worker.missed_keep_alives >= KEEP_ALIVE_TOLERANCE:
-                    some_dead = True
-                    worker.change_state("DEAD")
+                    worker.kill()
 
-                    #If it had a task, remove it
-                    for img in self.images:
-                        if img.worker_responsible == worker:
-                            img.worker_responsible = None
-                            continue
-
-                    self.put_outout_history(f"Worker {worker.id} is dead.")
+                    self.put_outout_history(f"Worker {worker.id} deemed dead.")
                     self.assign_task() #Try to assign it again
                 else:
                     self.message_manager.send(worker.addr, KeepAliveMessage())
 
                 #If there's a task confirmation pending...
-                if str(worker.confirmation_pending) != False: #Why is 0 == False in python...
-                    worker.confirmation_pending += 1
-
-                    #If waited for too long, remove the task from it
-                    if worker.confirmation_pending < TASK_CONFIRM_TOLERANCE:
-                        continue
-
-                    worker.change_state("IDLE")
-
-                    for img in self.images:
-                        if img.worker_responsible == worker:
-                            img.worker_responsible = None
-                            continue
-
-                    self.put_outout_history(f"Worker {worker.id} missed it's job assignment.")
-                    self.assign_task() #Try to assign it again
-
-            #Makes it so dead workers are not assigned to images
-            if some_dead:
-                for i in self.images:
-                    i.update_worker()
+                if worker.task != None and worker.task.confirmed == False:
+                    denied = worker.task.missed_confirm()
+                    
+                    if denied:
+                        self.put_outout_history(f"Worker {worker.id} missed it's job assignment.")
+                        self.assign_task() #Try to assign it again
 
             #Update interfaces
             self.print_interface()
@@ -400,14 +410,9 @@ class Broker:
         if self.first_join:
             self.first_join = False
             self.start_time = datetime.now()
-            #self.done()
-            #return
 
         #Either creates or resurrects the worker
-        if addr not in self.workers.keys():
-            self.workers[addr] = WorkerInfo(addr, len(self.workers)+1)
-        else:
-            self.workers[addr].resurrect()
+        self.workers[addr] = WorkerInfo(addr, len(self.workers)+1)
 
         id = self.workers[addr].id
 
@@ -426,22 +431,33 @@ class Broker:
 
     #Handles the task confimation, to be sure that the message was not lost
     def handle_task_confirmation(self, addr):
-        self.workers[addr].confirmation_pending = 0
+        self.workers[addr].task.missed_confirmations = 0
 
     #Handles the request for image fragments
     def handle_fragment_request(self, msg : FragmentRequestMessage, addr):
         #Sends back the requested piece
         try: #TODO fix
-            img = None
-            for i in self.images:
-                if i.id == msg.id:
-                    img = i
-                    break
+
+            #It can be either a list or int
+            if type(msg.id) == list:
+                task_id = msg.id[0]
+                image_index = msg.id[1]
+            else:
+                task_id = msg.id
+                image_index = 0
+
+            if task_id not in Task.current_tasks.keys():
+                return
+
+            img = Task.current_tasks[task_id].images[image_index]
             
             fragment = img.get_fragment(msg.piece)
             reply = FragmentReplyMessage(msg.id, fragment.decode('utf-8'), msg.piece)
             self.message_manager.send(addr, reply)
-        except:
+
+        except Exception as er:
+            self.put_outout_history("EWE")
+            raise er
             pass
 
     #Receives the result of an operation from a worker
@@ -450,27 +466,41 @@ class Broker:
         #Sends a confirmation that it received the task
         self.message_manager.send(addr, TaskConfimationMessage())
 
-        #Flags that the worker is done with their operation
         worker = self.workers[addr]
-        worker.change_state("IDLE")
+
+        #It can be either a list or int
+        if type(msg.id) == list:
+            task_id = msg.id[0]
+        else:
+            task_id = msg.id
+
+        #Only accept tasks from the worker assigned to it
+        if task_id not in Task.current_tasks.keys() or Task.current_tasks[task_id].worker != worker:
+            self.put_outout_history(f"Alert: Worker {worker.id} sent in a task that was not assigned to it.")
+            
+            return
+
+        #Flags that the worker is done with their operation
+        worker.task.complete()
+
+        task = Task.current_tasks[task_id]
 
         #If it was a resize...
-        if msg.operation == "RESIZE":
+        if task.type == "RESIZE":
 
             #Invokes resize callback when the image is reconstructed
-            self.message_manager.request_image(addr, msg.id, msg.fragments, self.resize_callback, None, worker.id)
+            self.message_manager.request_image(addr, task.id, msg.fragments, self.resize_callback, {"task_id" : task.id}, worker.id)
 
         #If it's a merge
         else:
             #Invokes merge callback when the image is reconstructed
-            self.message_manager.request_image(addr, msg.id[0], msg.fragments, self.merge_callback, {"merge_ids" : msg.prev_ids}, worker.id)
+            self.message_manager.request_image(addr, task.id, msg.fragments, self.merge_callback, {"task_id" : task.id}, worker.id)
 
     #Invoked when all the fragments of the image is collected and the image is constructed
     def resize_callback(self, request : ImageRequest):
         #Updates the image to the resized varient
-        for img in self.images:
-            if img.id == request.id:
-                img.update_image_resized(str.encode(request.image_base64))
+        task_id = request.data["task_id"]
+        Task.current_tasks[task_id].images[0].update_image_resized(str.encode(request.image_base64))
 
         self.put_outout_history(f"Worker {request.worker} is done resizing.")
 
@@ -482,38 +512,29 @@ class Broker:
         try: #Fix
 
             #Get the merge ids from the request
-            merge_ids = request.data["merge_ids"]
+            task_id = request.data["task_id"]
 
             #Get the images
-            A_img = None
-            B_img = None
-            for img in self.images:
-                if A_img != None and B_img != None:
-                    break
-                
-                print(img.id, merge_ids[0], merge_ids[1])
-
-                if img.id == merge_ids[0]:
-                    A_img = img
-                elif img.id == merge_ids[1]:
-                    B_img = img
+            A_img : ImageWrapper = Task.current_tasks[task_id].images[0]
+            B_img : ImageWrapper = Task.current_tasks[task_id].images[1]
 
             #Merges the two images
-            A_img.merge(B_img, request.image_base64)
-            self.images.remove(B_img)
+            ImageWrapper.merge([A_img, B_img], request.image_base64)
+
             self.put_outout_history(f"Worker {request.worker} is done merging.")
         except:
+            self.put_outout_history("UWU")
             pass
         #See if there's a new task for the worker
         self.assign_task()
 
     #Invoked whenever a task is completed or a new worker has joined. Sends tasks to workers if needed
     def assign_task(self):
-        #If the images were all resized and/or merged...
-        if len(self.images) == 1 and self.images[0].resized:
+
+        #If all the images are merged...
+        if all([x.merged != None for x in self.images]):
             #All tasks were done. All finished!
             self.done()
-            return
 
         #If there are no idle workers, there's nothing to be done
         idle_workers = self.get_idle_workers()
@@ -521,41 +542,41 @@ class Broker:
             return
 
         #Evaluate if any of the images need to be operated on
-        for index, img in enumerate(self.images):
-            #Don't bother if there ano idle workers
-            if len(idle_workers) == 0:
-                break      
+        for index, img in enumerate(self.images): 
+            img : ImageWrapper
+
+            if img.task != None or len(idle_workers) == 0:
+                break
 
             #Resize if needed
-            if not img.resized and img.worker_responsible == None:
+            if not img.resized:
                 #Assign a worker to it
-                worker = idle_workers.pop()
-                worker.change_state("RESIZE")
-                worker.confirmation_pending = 0
-                img.worker_responsible = worker
-                img.resize_start = datetime.now()
+                worker : WorkerInfo = idle_workers.pop()
+
+                #Creates the task
+                task : Task = Task.register("RESIZE", [img], worker)
 
                 #Sends the command to the worker
-                msg = ResizeRequestMessage(img.id,img.fragment_count(), self.height)
+                print("sending " +str(task.id))
+                msg = ResizeRequestMessage(task.id,img.fragment_count(), self.height)
                 self.message_manager.send(worker.addr, msg)
 
-                self.put_outout_history(f"Assinging worker {worker.id} to resize {img.img_names[0]}.")
-            #Look for merges
+                self.put_outout_history(f"Assinging worker {worker.id} to resize {img.name}.")
+            #Look for terminal nodes
             else:
-                next_img = self.images[(index + 1) % len(self.images)]
+                A_image : ImageWrapper = img.get_terminal_images()
+                B_image = self.images[(index + 1) % len(self.images)].get_terminal_images()
 
                 #If it is also resized, then merge
-                if next_img != img and next_img.resized:
+                if B_image != A_image and B_image.resized:
                     #Assign a worker to it
-                    worker = idle_workers.pop()
-                    worker.change_state("MERGE")
-                    worker.confirmation_pending = 0
-                    img.worker_responsible = worker
-                    next_img.worker_responsible = worker
-                    img.merge_start = datetime.now()
+                    worker : WorkerInfo = idle_workers.pop()
+
+                    #Creates the task
+                    task : Task = Task.register("MERGE", [A_image, B_image], worker)     
 
                     #Asks a worker to merge it
-                    msg = MergeRequestMessage((img.id, next_img.id), (img.fragment_count(), next_img.fragment_count()))
+                    msg = MergeRequestMessage(task.id, (A_image.fragment_count(), B_image.fragment_count()))
                     self.message_manager.send(worker.addr, msg)
 
                     self.put_outout_history(f"Assinging worker {worker.id} to merge two images.")
@@ -591,13 +612,12 @@ class Broker:
     #Invoked when all images are resized and merged together.
     #Prints stats to terminal
     def done(self):
-        
         #Calculate some stats
         elapsed_time = (datetime.now() - self.start_time)
 
-        resizes = TaskInfo.get_by_type("RESIZE")
-        merges = TaskInfo.get_by_type("MERGE")
-        workers = TaskInfo.get_workers()
+        resizes = Task.get_by_type("RESIZE")
+        merges = Task.get_by_type("MERGE")
+        workers = Task.get_workers()
 
         mean_resizes_count = len(resizes)/len(workers)
         mean_merges_count = len(merges)/len(workers)
@@ -671,12 +691,12 @@ class Broker:
         print("\n*Not every worker was necessarily alive up until the end.")  
 
         print("\nALL TASKS:\n"+"-"*50)  
-        for t in reversed(TaskInfo.history):
+        for t in reversed(Task.history):
             print(t)   
         print("\n*Tasks given but not finished by the worker are not listed.")  
 
         #Opens the final image and saves to disk
-        final_image = ImageWrapper.decode(self.images[0].image_encoded)
+        final_image = ImageWrapper.decode(self.images[0].get_encoded())
         final_image.show()
         print("\nOpening and saving the final image to disk.")  
 
@@ -706,6 +726,7 @@ class Broker:
 
     #Prints the interface
     def print_interface(self) -> None:
+        #return
         os.system("cls||clear") #Clears on both windows and linux
 
         #Broker info
@@ -716,7 +737,7 @@ class Broker:
         #Image window
         print("\nIMAGES")
         total_char = 30
-        percentage = (TaskInfo.merges_count+TaskInfo.resizes_count)/((self.image_count*2)-1)
+        percentage = (Task.merge_count+Task.resize_count)/((self.image_count*2)-1)
         progress_bar = "█"*int(total_char*percentage)+"░"*int(total_char*(1-percentage))
         if percentage > 0:
             print(f"{progress_bar} {int(100*percentage)}%")
@@ -738,4 +759,4 @@ class Broker:
         print("\n".join(self.output))
         pass
 
-    #endregion
+#endregion
