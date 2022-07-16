@@ -113,6 +113,10 @@ class Worker:
                 #Gets message from broker
                 message = self.message_manager.receive()[0]
                 
+                #If has a pending task, continue sending it until confirmation is given
+                if self.pending_task != False:
+                    self.message_manager.send(self.broker_sock, self.pending_task)
+
                 #Requests any pending fragments that there might have
                 self.message_manager.request_fragments()
 
@@ -159,10 +163,6 @@ class Worker:
     #Simply sends the message back so that the broker knows this is alive
     def handle_keep_alive(self, msg : KeepAliveMessage):
         self.message_manager.send(self.broker_sock, msg)
-
-        #If has a pending task, continue sending it until confirmation is given
-        if self.pending_task != False:
-            self.message_manager.send(self.broker_sock, self.pending_task)
 
     #Handles the task confimation, to be sure that the message was not lost
     def handle_task_confirmation(self):
@@ -293,6 +293,8 @@ class Worker:
 
         self.put_outout_history("Powering off...")
         self.sock.close()
+
+        sys.exit()
 
     #region INTERFACE
 

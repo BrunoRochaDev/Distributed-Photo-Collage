@@ -30,6 +30,9 @@ TASK_CONFIRM_TOLERANCE = 3
 #Wrapper class for holding image data for ease of access
 class ImageWrapper:
 
+    #The maximum size of name in characters
+    MAX_NAME = 40
+
     @classmethod
     def create(cls, name : str, path : str) -> object:
         img = ImageWrapper()
@@ -72,7 +75,9 @@ class ImageWrapper:
     def merge(self, images : list, new_image : str):
 
         merged_image = ImageWrapper()
+
         merged_image.name = ' + '.join(img.name for img in images)
+
         merged_image.resized = True
         merged_image.task = None
         merged_image.merged = None
@@ -148,7 +153,7 @@ class WorkerInfo:
 class Task:
 
     #Static list of all COMPLETED tasks
-    history = []
+    history = {}
 
     current_tasks = {}
 
@@ -215,13 +220,13 @@ class Task:
         for img in self.images:
             img.task = None
 
-        type(self).history.append(self)
+        type(self).history[self.id] = self
 
     #Gets every task, MERGE or RESIZE
     @classmethod
     def get_by_type(cls, type : str) -> list:
         res = []
-        for t in cls.history:
+        for t in cls.history.values():
             if t.type == type:
                 res.append(t)
         return res
@@ -231,7 +236,7 @@ class Task:
     @classmethod
     def get_workers(cls) -> dict:
         res = {}
-        for t in cls.history:
+        for t in cls.history.values():
             if t.worker not in res.keys():
                 res[t.worker] = 1
             else:
@@ -244,7 +249,7 @@ class Task:
         if self.type == "MERGE":
             res = f"Worker {self.worker.id} merged '{self.images[0].name}' with {self.images[1].name}"
         else:
-            res = f"Worker {self.worker.id} reiszed '{self.images[0].name}'"
+            res = f"Worker {self.worker.id} resized '{self.images[0].name}'"
 
         #Adds the timestamp
         time = "{:02d}:{:02d}:{:02d}".format(self.timestamp.hour, self.timestamp.minute, self.timestamp.second)
@@ -436,37 +441,28 @@ class Broker:
     #Handles the request for image fragments
     def handle_fragment_request(self, msg : FragmentRequestMessage, addr):
         #Sends back the requested piece
-        try: #TODO fix
 
-            #It can be either a list or int
-            if type(msg.id) == list:
-                task_id = msg.id[0]
-                image_index = msg.id[1]
-            else:
-                task_id = msg.id
-                image_index = 0
+        #It can be either a list or int
+        if type(msg.id) == list:
+            task_id = msg.id[0]
+            image_index = msg.id[1]
+        else:
+            task_id = msg.id
+            image_index = 0
 
-            if task_id not in Task.current_tasks.keys():
-                return
+        if task_id not in Task.current_tasks.keys():
+            return
 
-            img = Task.current_tasks[task_id].images[image_index]
-            
-            fragment = img.get_fragment(msg.piece)
-            reply = FragmentReplyMessage(msg.id, fragment.decode('utf-8'), msg.piece)
-            self.message_manager.send(addr, reply)
-
-        except Exception as er:
-            self.put_outout_history("EWE")
-            raise er
-            pass
+        img = Task.current_tasks[task_id].images[image_index]
+        
+        fragment = img.get_fragment(msg.piece)
+        reply = FragmentReplyMessage(msg.id, fragment.decode('utf-8'), msg.piece)
+        self.message_manager.send(addr, reply)
 
     #Receives the result of an operation from a worker
     def handle_operation_reply(self, msg : OperationReplyMessage, addr):
-
         #Sends a confirmation that it received the task
         self.message_manager.send(addr, TaskConfimationMessage())
-
-        worker = self.workers[addr]
 
         #It can be either a list or int
         if type(msg.id) == list:
@@ -474,10 +470,15 @@ class Broker:
         else:
             task_id = msg.id
 
+        #Ignore responses for tasks that are already completed
+        if task_id in Task.history.keys():
+            return
+
+        worker : WorkerInfo = self.workers[addr]
+
         #Only accept tasks from the worker assigned to it
         if task_id not in Task.current_tasks.keys() or Task.current_tasks[task_id].worker != worker:
-            self.put_outout_history(f"Alert: Worker {worker.id} sent in a task that was not assigned to it.")
-            
+            self.put_outout_history(f"Alert: Worker {worker.id} sent in a task that was not assigned to it.")  
             return
 
         #Flags that the worker is done with their operation
@@ -658,8 +659,6 @@ class Broker:
         #Get the mean from the sum
         time_merge_mean /= len(merges)
 
-        #TODO: Se uma task falhar e for reiniciada por outro worker, o tempo deve resetar?
-
         #PRINTS STATS
         os.system("cls||clear") #Clears on both windows and linux
         #Broker info
@@ -691,7 +690,7 @@ class Broker:
         print("\n*Not every worker was necessarily alive up until the end.")  
 
         print("\nALL TASKS:\n"+"-"*50)  
-        for t in reversed(Task.history):
+        for t in reversed(Task.history.values()):
             print(t)   
         print("\n*Tasks given but not finished by the worker are not listed.")  
 
