@@ -184,6 +184,10 @@ class Worker:
     def handle_keep_alive(self, msg : KeepAliveMessage):
         self.message_manager.send(self.broker_sock, msg)
 
+        #Update interface
+        if self.format_output:
+            self.print_interface()
+
     #Handles the task confimation, to be sure that the message was not lost
     def handle_task_confirmation(self):
         if self.pending_task != False:
@@ -345,10 +349,8 @@ class Worker:
                 self.output_history[i] = self.output_history[i-1]
 
         #Prints as an interface or not, depending on args
-        if self.format_output:
+        if not self.format_output:
             self.print_interface()
-        else:
-            print(value)
 
     #Prints the interface
     def print_interface(self) -> None:

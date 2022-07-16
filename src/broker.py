@@ -30,9 +30,6 @@ TASK_CONFIRM_TOLERANCE = 3
 #Wrapper class for holding image data for ease of access
 class ImageWrapper:
 
-    #The maximum size of name in characters
-    MAX_NAME = 40
-
     @classmethod
     def create(cls, name : str, path : str) -> object:
         img = ImageWrapper()
@@ -51,6 +48,11 @@ class ImageWrapper:
         img.task = None #Not associated with any tasks when created
 
         return img
+
+    #The maximum size of name in characters
+    MAX_NAME = 40
+    def get_name(self) -> str:
+        return (self.name[:self.MAX_NAME] + '[...]') if len(self.name) > self.MAX_NAME else self.name
 
     def get_encoded(self) -> str:
         return self.merged.get_encoded() if self.merged != None else self.image_encoded
@@ -117,7 +119,7 @@ class ImageWrapper:
         else:
             state = "ASSIGNED" if self.task != None else "PENDING"
 
-        return '{:13s} {:3s}'.format(state, self.name)
+        return '{:13s} {:3s}'.format(state, self.get_name())
 
 #Class for holding worker info
 class WorkerInfo:
@@ -131,6 +133,7 @@ class WorkerInfo:
         self.id = id
         self.state = "IDLE" #Can be IDLE, RESIZING, MERGING or DEAD
         self.missed_keep_alives = 0
+        self.task_count = 0
         self.task = None #Starts with no task
     
     def kill(self):
@@ -222,6 +225,7 @@ class Task:
 
         #Frees the workers and images
         self.worker.assign_task(None)
+        self.worker.task_count += 1
         for img in self.images:
             img.task = None
 
@@ -252,9 +256,9 @@ class Task:
     def __str__(self) -> str:
         res = ''
         if self.type == "MERGE":
-            res = f"Worker {self.worker.id} merged '{self.images[0].name}' with {self.images[1].name}"
+            res = f"Worker {self.worker.id} merged '{self.images[0].get_name()}' with {self.images[1].get_name()}"
         else:
-            res = f"Worker {self.worker.id} resized '{self.images[0].name}'"
+            res = f"Worker {self.worker.id} resized '{self.images[0].get_name()}'"
 
         #Adds the timestamp
         time = "{:02d}:{:02d}:{:02d}".format(self.timestamp.hour, self.timestamp.minute, self.timestamp.second)
@@ -281,6 +285,8 @@ class Broker:
         #Setup the images before anything else
         self.path = path
         self.height = height
+        self.image_count = 0
+        self.images = []
         self.setup_images()
 
         #Start the server after images are validated
@@ -293,6 +299,10 @@ class Broker:
 
     #Makes note of each valid image in the directory
     def setup_images(self):
+        self.output("Setting up images...")
+        if self.format_output:
+            self.print_interface()
+
         #Throw exception if directory doesn't exist
         if(not os.path.isdir(self.path)):
             raise FileNotFoundError( errno.ENOENT, os.strerror(errno.ENOENT), self.path)
@@ -303,7 +313,6 @@ class Broker:
         pass
 
         #Iterates through the files in the images directory and creates the image object
-        self.images = []
         for filename in os.listdir(self.path):
             f = os.path.join(self.path, filename)
             #Ignore non-image files (support only .jpg for now)
@@ -471,6 +480,8 @@ class Broker:
 
     #Receives the result of an operation from a worker
     def handle_operation_reply(self, msg : OperationReplyMessage, addr):
+        worker : WorkerInfo = self.workers[addr]
+
         #It can be either a list or int
         if type(msg.id) == list:
             task_id = msg.id[0]
@@ -481,10 +492,8 @@ class Broker:
         self.message_manager.send(addr, TaskConfimationMessage())
 
         #Ignore responses for tasks that are already completed
-        if task_id in Task.history.keys():
+        if worker.task == None or task_id in Task.history.keys():
             return
-
-        worker : WorkerInfo = self.workers[addr]
 
         #Only accept tasks from the worker assigned to it
         if task_id not in Task.current_tasks.keys() or Task.current_tasks[task_id].worker != worker:
@@ -520,22 +529,20 @@ class Broker:
 
     #Invoked when all the fragments of the image is collected and the image is constructed
     def merge_callback(self, request : ImageRequest):
-        try: #Fix
 
-            #Get the merge ids from the request
-            task_id = request.data["task_id"]
+        #Get the merge ids from the request
+        task_id = request.data["task_id"]
 
-            #Get the images
-            A_img : ImageWrapper = Task.current_tasks[task_id].images[0]
-            B_img : ImageWrapper = Task.current_tasks[task_id].images[1]
+        #Get the images
+        A_img : ImageWrapper = Task.current_tasks[task_id].images[0]
+        B_img : ImageWrapper = Task.current_tasks[task_id].images[1]
 
-            #Merges the two images
-            ImageWrapper.merge([A_img, B_img], request.image_base64)
+        #Merges the two images
+        ImageWrapper.merge([A_img, B_img], request.image_base64)
 
-            self.output(f"Worker {request.worker} is done merging.")
-        except:
-            self.output("UWU")
-            pass
+        self.output(f"Worker {request.worker} is done merging.")
+
+
         #See if there's a new task for the worker
         self.assign_task()
 
@@ -553,7 +560,8 @@ class Broker:
             return
 
         #Evaluate if any of the images need to be operated on
-        for index, img in enumerate(self.images): 
+        terminal_images = []
+        for img in self.images: 
             img : ImageWrapper
 
             if img.task != None or len(idle_workers) == 0:
@@ -571,32 +579,46 @@ class Broker:
                 msg = ResizeRequestMessage(task.id,img.fragment_count(), self.height)
                 self.message_manager.send(worker.addr, msg)
 
-                self.output(f"Assinging worker {worker.id} to resize {img.name}.")
-            #Look for terminal nodes
+                self.output(f"Assinging worker {worker.id} to resize '{img.get_name()}'.")
+            #Look for terminal merge
             else:
-                A_image : ImageWrapper = img.get_terminal_images()
-                B_image = self.images[(index + 1) % len(self.images)].get_terminal_images()
+                if img not in terminal_images:
+                    terminal_images.append( img.get_terminal_images() )
 
-                #If it is also resized, then merge
-                if B_image != A_image and B_image.resized:
-                    #Assign a worker to it
-                    worker : WorkerInfo = idle_workers.pop()
+        #Find terminal images to merge
+        for index, img in enumerate(terminal_images):
+            img : ImageWrapper
 
-                    #Creates the task
-                    task : Task = Task.register("MERGE", [A_image, B_image], worker)     
+            if img.task != None or len(idle_workers) == 0:
+                break
+            
+            A_image : ImageWrapper = img.get_terminal_images()
+            B_image : ImageWrapper = terminal_images[(index + 1) % len(terminal_images)].get_terminal_images()
 
-                    #Asks a worker to merge it
-                    msg = MergeRequestMessage(task.id, (A_image.fragment_count(), B_image.fragment_count()))
-                    self.message_manager.send(worker.addr, msg)
+            #If it is also resized, then merge
+            if B_image != A_image and B_image.resized:
+                #Assign a worker to it
+                worker : WorkerInfo = idle_workers.pop()
 
-                    self.output(f"Assinging worker {worker.id} to merge two images.")
+                #Creates the task
+                task : Task = Task.register("MERGE", [A_image, B_image], worker)     
+
+                #Asks a worker to merge it
+                msg = MergeRequestMessage(task.id, (A_image.fragment_count(), B_image.fragment_count()))
+                self.message_manager.send(worker.addr, msg)
+                if worker.id == 1:
+                    self.output(f"Assigning worker {worker.id} to merge '{A_image.get_name()}' and '{B_image.get_name()}'.")
 
 
     #Returns a list of all workers without tasks
     def get_idle_workers(self) -> list:
         res = []
+        #Sort by number of tasks done, so that load is well balenced between workers
+        workers = list(self.workers.values())
+        workers.sort(key=lambda x: x.task_count, reverse=True)
 
-        for w in self.workers.values():
+        #Get the idle ones
+        for w in workers:
             if w.state == 'IDLE':
                 res.append(w)
 
@@ -700,7 +722,7 @@ class Broker:
         print("*Not every worker was necessarily alive up until the end.")  
 
         print("\nALL TASKS:\n"+"-"*50)  
-        for t in reversed(Task.history.values()):
+        for t in Task.history.values():
             print(t)   
         print("\n*Tasks given but not finished by the worker are not listed.")  
 
@@ -719,7 +741,6 @@ class Broker:
     OUTPUT_QUEUE_LENGTH = 20    
     output_history = ['...' for i in range(0,OUTPUT_QUEUE_LENGTH)]
     def output(self, value : str):
-
         #Get the current time for timestamp
         curr_time = datetime.now()
         time = "{:02d}:{:02d}:{:02d}".format(curr_time.hour, curr_time.minute, curr_time.second)
@@ -733,9 +754,7 @@ class Broker:
                 self.output_history[i] = self.output_history[i-1]
 
         #Prints as an interface or not, depending on args
-        if self.format_output:
-            self.print_interface()
-        else:
+        if not self.format_output:
             print(value)
 
     #Prints the interface
