@@ -5,6 +5,7 @@ import os #For clearing the console
 from datetime import datetime #For making timestamps
 import time #For sleeping (simulate complex work)
 import random #For picking random sleep intervals
+import sys #For closing the app
 
 from .message_manager import ImageRequest, MessageManager
 
@@ -246,9 +247,14 @@ class Worker:
             #Merges the images
             A_image_size = self.A_image.size
             B_image_size = B_image.size
-            merged_image = Image.new('RGB',(A_image_size[0] + B_image_size[0], A_image_size[1]), (250,250,250))
-            merged_image.paste(self.A_image, (0,0))
-            merged_image.paste(B_image, (A_image_size[0],0))
+
+            #Try to merge the images, sometimes "mage file is truncated" is thrown
+            try:
+                merged_image = Image.new('RGB',(A_image_size[0] + B_image_size[0], A_image_size[1]), (250,250,250))
+                merged_image.paste(self.A_image, (0,0))
+                merged_image.paste(B_image, (A_image_size[0],0))
+            except:
+                self.put_outout_history("An error occured while merging. Potential data corruption")
 
             #Stores it
             self.images[request.id[0]] = ImageWrapper(request.id, merged_image)

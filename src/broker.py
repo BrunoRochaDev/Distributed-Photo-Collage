@@ -2,6 +2,7 @@ import os #For managing files
 import errno #For error handling
 
 import socket #For creating websockets
+import sys #For closing the app
 import threading #For parallelism
 
 import time #For sleeping
@@ -579,9 +580,11 @@ class Broker:
             if w.state != "DEAD":
                 self.message_manager.send(w.addr, msg)
 
-        #Shutdown itself
+        #Shutdown the socket
         self.running = False
         self.sock.close()
+
+        sys.exit()
 
     #region INTERFACE
 
