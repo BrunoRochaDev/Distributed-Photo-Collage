@@ -159,12 +159,20 @@ class TaskInfo:
 
     #Static list of all tasks
     history = []
+
+    resizes_count = 0
+    merges_count = 0
     
     #Creates and stores a task info in the static list
     @classmethod
     def register(cls, type : str, img_names : list, start_time : datetime, worker : WorkerInfo):
         task = TaskInfo(type, img_names, start_time, worker)
         cls.history.append(task)
+
+        if type == "MERGE":
+            cls.merges_count += 1
+        else:
+            cls.resizes_count += 1
 
     #Should use the create method
     def __init__(self, type : str, img_names : list, start_time : datetime, worker : WorkerInfo) -> None:
@@ -259,7 +267,8 @@ class Broker:
         self.images.sort(key=lambda x: x.modified_time, reverse=True)
 
         #Print result
-        self.put_outout_history(f"{len(self.images)} image(s) found.")
+        self.image_count = len(self.images)
+        self.put_outout_history(f"{self.image_count} image(s) found.")
 
     #endregion
 
@@ -421,15 +430,18 @@ class Broker:
     #Handles the request for image fragments
     def handle_fragment_request(self, msg : FragmentRequestMessage, addr):
         #Sends back the requested piece
-        img = None
-        for i in self.images:
-            if i.id == msg.id:
-                img = i
-                break
-        
-        fragment = img.get_fragment(msg.piece)
-        reply = FragmentReplyMessage(msg.id, fragment.decode('utf-8'), msg.piece)
-        self.message_manager.send(addr, reply)
+        try: #TODO fix
+            img = None
+            for i in self.images:
+                if i.id == msg.id:
+                    img = i
+                    break
+            
+            fragment = img.get_fragment(msg.piece)
+            reply = FragmentReplyMessage(msg.id, fragment.decode('utf-8'), msg.piece)
+            self.message_manager.send(addr, reply)
+        except:
+            pass
 
     #Receives the result of an operation from a worker
     def handle_operation_reply(self, msg : OperationReplyMessage, addr):
@@ -450,8 +462,7 @@ class Broker:
         #If it's a merge
         else:
             #Invokes merge callback when the image is reconstructed
-            self.merge_ids = msg.prev_ids
-            self.message_manager.request_image(addr, msg.id[0], msg.fragments, self.merge_callback)
+            self.message_manager.request_image(addr, msg.id[0], msg.fragments, self.merge_callback, {"merge_ids" : msg.prev_ids})
 
     #Invoked when all the fragments of the image is collected and the image is constructed
     def resize_callback(self, request : ImageRequest):
@@ -467,7 +478,11 @@ class Broker:
 
     #Invoked when all the fragments of the image is collected and the image is constructed
     def merge_callback(self, request : ImageRequest):
-        try:
+        try: #Fix
+
+            #Get the merge ids from the request
+            merge_ids = request.data["merge_ids"]
+
             #Get the images
             A_img = None
             B_img = None
@@ -475,11 +490,11 @@ class Broker:
                 if A_img != None and B_img != None:
                     break
                 
-                print(img.id, self.merge_ids[0], self.merge_ids[1])
+                print(img.id, merge_ids[0], merge_ids[1])
 
-                if img.id == self.merge_ids[0]:
+                if img.id == merge_ids[0]:
                     A_img = img
-                elif img.id == self.merge_ids[1]:
+                elif img.id == merge_ids[1]:
                     B_img = img
 
             #Merges the two images
@@ -554,6 +569,21 @@ class Broker:
                 res.append(w)
 
         return res
+
+    #Shutdown the broker and workers
+    def poweroff(self):
+
+        #Shutdown all workers
+        msg = DoneMessage()
+        for w in self.workers.values():
+            if w.state != "DEAD":
+                self.message_manager.send(w.addr, msg)
+
+        #Shutdown itself
+        self.running = False
+        self.sock.close()
+
+    #region INTERFACE
 
     #Invoked when all images are resized and merged together.
     #Prints stats to terminal
@@ -653,21 +683,6 @@ class Broker:
 
         pass
 
-    #Shutdown the broker and workers
-    def poweroff(self):
-
-        #Shutdown all workers
-        msg = DoneMessage()
-        for w in self.workers.values():
-            if w.state != "DEAD":
-                self.message_manager.send(w.addr, msg)
-
-        #Shutdown itself
-        self.running = False
-        self.sock.close()
-
-    #region INTERFACE
-
     #Helper method for the output history queue
     OUTPUT_QUEUE_LENGTH = 20    
     output = ['...' for i in range(0,OUTPUT_QUEUE_LENGTH)]
@@ -696,7 +711,13 @@ class Broker:
         print("Port: 1024")
 
         #Image window
-        print("\nIMAGES\n"+"-"*50)
+        print("\nIMAGES")
+        total_char = 30
+        percentage = (TaskInfo.merges_count+TaskInfo.resizes_count)/((self.image_count*2)-1)
+        progress_bar = "█"*int(total_char*percentage)+"░"*int(total_char*(1-percentage))
+        if percentage > 0:
+            print(f"{progress_bar} {int(100*percentage)}%")
+        print("-"*50)
         for id, img in enumerate(self.images):
             print(f'{id+1}.\t{img}')
 

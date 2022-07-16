@@ -178,25 +178,27 @@ class Worker:
         self.status = "RESIZING"
         self.put_outout_history("Received a resize operation request. Resizing...")
 
-        height = msg.height
-
         #Sends a confirmation that it received the task
         self.message_manager.send(self.broker_sock, TaskConfimationMessage())
 
         #Invokes merge callback when the image is reconstructed
-        self.message_manager.request_image(self.broker_sock, msg.id, msg.fragments, self.resize_callback)
+        self.message_manager.request_image(self.broker_sock, msg.id, msg.fragments, self.resize_callback, {"desired_height" : msg.height})
 
 
     #Invoked when all the fragments of the image is collected and the image is constructed
     def resize_callback(self, request : ImageRequest):
+
+        #Gets the desired height from the request
+        desired_height = request.data["desired_height"]
+
         PIL_image = ImageWrapper.decode(request.image_base64)
 
         #Calculates the new dimension
         width, height = PIL_image.size
         ratio = width/height
 
-        new_width = math.ceil(height * ratio)
-        new_height = math.ceil(height)
+        new_width = math.ceil(desired_height * ratio)
+        new_height = math.ceil(desired_height)
 
         #Resizes the image and stores it in the image dict
         PIL_image = PIL_image.resize((new_width, new_height))
@@ -221,14 +223,13 @@ class Worker:
 
         #Ugly
         self.merge_count = 0
-        self.merge_ids = [msg.id[0], msg.id[1]]
 
         #Sends a confirmation that it received the task
         self.message_manager.send(self.broker_sock, TaskConfimationMessage())
 
         #Invokes merge callback when the image is reconstructed
-        self.message_manager.request_image(self.broker_sock, msg.id[0], msg.fragments[0], self.merge_callback)
-        self.message_manager.request_image(self.broker_sock, msg.id[1], msg.fragments[1], self.merge_callback)
+        self.message_manager.request_image(self.broker_sock, msg.id[0], msg.fragments[0], self.merge_callback, {"merge_ids" : [msg.id[0], msg.id[1]] })
+        self.message_manager.request_image(self.broker_sock, msg.id[1], msg.fragments[1], self.merge_callback, {"merge_ids" : [msg.id[0], msg.id[1]] })
 
     #Invoked when all the fragments of the image is collected and the image is constructed
     def merge_callback(self, request : ImageRequest):
@@ -238,6 +239,9 @@ class Worker:
            self.A_image = ImageWrapper.decode(request.image_base64)
         #Second image came through
         else:
+            #Gets the merge_ids from request
+            merge_ids = request.data["merge_ids"]
+
             B_image = ImageWrapper.decode(request.image_base64)
             #Merges the images
             A_image_size = self.A_image.size
@@ -252,7 +256,7 @@ class Worker:
             #Notifies the broker it's done
             self.status = "IDLE"
             self.put_outout_history("Merged the images. Sending it to the broker...")
-            self.pending_task = OperationReplyMessage("MERGE",request.id, self.id, self.images[request.id[0]].fragment_count(), self.merge_ids)
+            self.pending_task = OperationReplyMessage("MERGE",request.id, self.id, self.images[request.id[0]].fragment_count(), merge_ids)
             self.message_manager.send(self.broker_sock, self.pending_task)
 
         #Increase the counter

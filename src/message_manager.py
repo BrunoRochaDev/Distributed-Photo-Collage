@@ -5,11 +5,12 @@ import socket #For creating websockets
 
 class ImageRequest:
     
-    def __init__(self, addr, id : str, fragment_count : int, callback, worker : int = 0) -> None:
+    def __init__(self, addr, id : str, fragment_count : int, callback, data : dict = None, worker : int = 0) -> None:
         self.addr = addr
         self.id = id
         self.fragment_count = fragment_count
         self.callback = callback
+        self.data = data #Anything that needs to be used in the callback function
         self.worker = worker
         self.received_pieces = set()
         self.received_fragments = [None for i in range(fragment_count)]
@@ -77,10 +78,10 @@ class MessageManager:
         return zlib.crc32(data)
 
     #
-    def request_image(self, addr, id :str, fragment_count : int, callback, worker : int = 0) -> str:
+    def request_image(self, addr, id :str, fragment_count : int, callback, data : dict = None, worker : int = 0) -> str:
         #print(datetime.now(),"requesting img", id)
         #Stores the new request in the dict
-        request_obj = ImageRequest(addr, id, fragment_count, callback, worker)
+        request_obj = ImageRequest(addr, id, fragment_count, callback, data, worker)
         self.request_dict[id] = request_obj
 
     #Request the pending fragments
