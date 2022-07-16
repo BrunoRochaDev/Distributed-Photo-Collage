@@ -57,8 +57,14 @@ class ImageWrapper:
 class Worker:
 
     #Times for sleeping (in seconds) to simulate complex work
-    MAX_SLEEP = 0
-    MIN_SLEEP = 0
+    MIN_SLEEP = 1
+    MAX_SLEEP = 3
+
+    #The odds of failure for every operation
+    FAILURE_ODDS = 0.01
+
+    #If on, the worker will randomly crash or freeze
+    simulate_failure = False
 
     #Whether the worker is running or not. Turned off by the broker
     running = True
@@ -78,11 +84,25 @@ class Worker:
     #Whether has a completed tasking pending confirmation
     pending_task = False
 
-    def __init__(self, port : int, address : str = socket.gethostname()) -> None:
+    def __init__(self, port : int, address : str = socket.gethostname(), simulate_failure : bool = False, min_sleep : float = None, max_sleep : float = None, fail_odds : float = None, format_output : bool = True) -> None:
+
+        #Set default values
+        address = socket.gethostname() if address == None else address
+        self.simulate_failure = False if simulate_failure == None else simulate_failure
+        self.MIN_SLEEP = self.MIN_SLEEP if min_sleep == None else min_sleep
+        self.MAX_SLEEP = self.MAX_SLEEP if max_sleep == None else max_sleep
+        self.FAILURE_ODDS = self.FAILURE_ODDS if fail_odds == None else fail_odds
+
+        #Formats the output or not
+        self.format_output = format_output
+
         self.broker_sock = (address, port)
 
         #Starts the client and connects to the broker
         self.start_client()
+
+        if self.simulate_failure:
+            self.output("Failure simulation is activated.")
 
         #Listens to requests from the broker
         self.run()
@@ -93,14 +113,14 @@ class Worker:
         #Creates the workers's client (UDP)
         self.sock = socket.socket(family=socket.AF_INET, type=socket.SOCK_DGRAM)
         self.port = self.sock.getsockname()[1]
-        self.put_outout_history("Starting up client...")
+        self.output("Starting up client...")
 
         #Creates the message manager, for sendind and reciving messages
         self.message_manager = MessageManager(self.sock)
 
         #Sends to broker a hello message
         self.message_manager.send(self.broker_sock, HelloMessage())
-        self.put_outout_history(f"Attemping to connect to broker {self.broker_sock}...")
+        self.output(f"Attemping to connect to broker {self.broker_sock}...")
 
 
     #Wait for commands from the broker
@@ -158,7 +178,7 @@ class Worker:
         self.status = "IDLE"
 
         #Update the interface
-        self.put_outout_history("Broker has acknowledged the connection.")
+        self.output("Broker has acknowledged the connection.")
 
     #Simply sends the message back so that the broker knows this is alive
     def handle_keep_alive(self, msg : KeepAliveMessage):
@@ -166,8 +186,9 @@ class Worker:
 
     #Handles the task confimation, to be sure that the message was not lost
     def handle_task_confirmation(self):
-        self.put_outout_history("Received confirmation that task was received.")
-        self.pending_task = False
+        if self.pending_task != False:
+            self.output("Received confirmation that task was received.")
+            self.pending_task = False
 
     #Firstly collect all the image fragments and then resizes
     def handle_resize_request(self, msg : ResizeRequestMessage):
@@ -177,7 +198,7 @@ class Worker:
             return
 
         self.status = "RESIZING"
-        self.put_outout_history("Received a resize operation request. Resizing...")
+        self.output("Received a resize operation request. Resizing...")
 
         #Sends a confirmation that it received the task
         #TODO: Colocar id da tarefa na confirmation?
@@ -204,12 +225,16 @@ class Worker:
 
         #Resizes the image and stores it in the image dict
         PIL_image = PIL_image.resize((new_width, new_height))
-        time.sleep(random.uniform(self.MIN_SLEEP, self.MAX_SLEEP))
+
+        #Either hangs, crashes or freezes if failure simulation is on
+        if self.simulate_failure:
+            self.fail()
+
         self.images[request.id] = ImageWrapper(request.id, PIL_image)
 
         #Notifies the broker it's done
         self.status = "IDLE"
-        self.put_outout_history("Resized the image. Sending it to the broker...")
+        self.output("Resized the image. Sending it to the broker...")
         self.pending_task = OperationReplyMessage(request.id, self.images[request.id].fragment_count())
         self.message_manager.send(self.broker_sock, self.pending_task)
                 
@@ -221,7 +246,7 @@ class Worker:
             return
 
         self.status = "MERGING"
-        self.put_outout_history("Received a merge operation request. Merging...")
+        self.output("Received a merge operation request. Merging...")
 
         #Sends a confirmation that it received the task
         self.message_manager.send(self.broker_sock, TaskConfimationMessage())
@@ -259,14 +284,18 @@ class Worker:
             merged_image.paste(self.A_image, (0,0))
             merged_image.paste(self.B_image, (A_image_size[0],0))
         except:
-            self.put_outout_history("An error occured while merging. Potential data corruption")
+            self.output("An error occured while merging. Potential data corruption")
+
+        #Either hangs, crashes or freezes if failure simulation is on
+        if self.simulate_failure:
+            self.fail()
 
         #Stores it
         self.images[request.id[0]] = ImageWrapper(request.id, merged_image)
 
         #Notifies the broker it's done
         self.status = "IDLE"
-        self.put_outout_history("Merged the images. Sending it to the broker...")
+        self.output("Merged the images. Sending it to the broker...")
         self.pending_task = OperationReplyMessage(request.id, self.images[request.id[0]].fragment_count())
         self.message_manager.send(self.broker_sock, self.pending_task)
 
@@ -282,7 +311,7 @@ class Worker:
 
     #Powers off by the broker's request
     def handle_done(self):
-        self.put_outout_history("Received the order to power off from the broker.")
+        self.output("Received the order to power off from the broker.")
         self.poweroff()  
 
     #Shutdown the worker
@@ -291,7 +320,7 @@ class Worker:
         self.connected = False
         self.status = "OFF"
 
-        self.put_outout_history("Powering off...")
+        self.output("Powering off...")
         self.sock.close()
 
         sys.exit()
@@ -300,8 +329,8 @@ class Worker:
 
     #Helper method for the output history queue
     OUTPUT_QUEUE_LENGTH = 20    
-    output = ['...' for i in range(0,OUTPUT_QUEUE_LENGTH)]
-    def put_outout_history(self, value : str):
+    output_history = ['...' for i in range(0,OUTPUT_QUEUE_LENGTH)]
+    def output(self, value : str):
 
         #Get the current time for timestamp
         curr_time = datetime.now()
@@ -311,10 +340,15 @@ class Worker:
         value = "{:10s} {}".format(time, value)
         for i in reversed(range(0, self.OUTPUT_QUEUE_LENGTH)):
             if i == 0:
-                self.output[i] = value
+                self.output_history[i] = value
             else:
-                self.output[i] = self.output[i-1]
-        self.print_interface()
+                self.output_history[i] = self.output_history[i-1]
+
+        #Prints as an interface or not, depending on args
+        if self.format_output:
+            self.print_interface()
+        else:
+            print(value)
 
     #Prints the interface
     def print_interface(self) -> None:
@@ -330,7 +364,32 @@ class Worker:
 
         #Output window
         print("\nOUTPUT\n"+"-"*47)
-        print("\n".join(self.output))
+        print("\n".join(self.output_history))
         pass
 
     #endregion
+
+    #Either sleeps, crashes or freezes
+    def fail(self):
+
+        chance = random.uniform(0, 1)
+
+        #Failure...
+        if chance < self.FAILURE_ODDS:
+
+            #Crash
+            if random.uniform(0,1) > 0.5:
+                raise Exception("Simulating a process crash.")
+            else:
+            #Freeze
+                self.output("Sleeping for an infinite amount of time to simulate freezing")
+                while True:
+                    time.sleep(1)
+
+            pass
+        #Delay
+        else:
+            delay_time = random.uniform(self.MIN_SLEEP, self.MAX_SLEEP)
+            self.output("Sleeping for {:.1f} seconds to simulate hangs.".format(delay_time))
+            time.sleep(delay_time)
+            pass

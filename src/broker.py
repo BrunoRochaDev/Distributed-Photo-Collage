@@ -122,6 +122,9 @@ class ImageWrapper:
 #Class for holding worker info
 class WorkerInfo:
 
+    #For statistics
+    dead_worker_count = 0
+
     #Creates the worker
     def __init__(self, addr, id : int) -> None:
         self.addr = addr
@@ -136,6 +139,8 @@ class WorkerInfo:
             self.task.denied()
 
         self.state = "DEAD"
+
+        type(self).dead_worker_count += 1
 
     #Should NOT be called manually, it's called automatically when a task instance is created
     def assign_task(self, task):
@@ -268,7 +273,11 @@ class Broker:
     #Only constructor. Takes two arguments:
     #   1. The path to the images folder
     #   2. The height of the merged image should have
-    def __init__(self, path : str, height : int) -> None:
+    def __init__(self, path : str, height : int, format_output : bool = True) -> None:
+
+        #Formats the output or not
+        self.format_output = format_output
+
         #Setup the images before anything else
         self.path = path
         self.height = height
@@ -307,7 +316,7 @@ class Broker:
 
         #Print result
         self.image_count = len(self.images)
-        self.put_outout_history(f"{self.image_count} image(s) found.")
+        self.output(f"{self.image_count} image(s) found.")
 
     #endregion
 
@@ -322,7 +331,7 @@ class Broker:
         #Binds the server socket to an interface address and port (> 1023)
         self.sock.bind((socket.gethostname(), 1024))
 
-        self.put_outout_history(f"Started server at port {1024}.")
+        self.output(f"Started server at port {1024}.")
 
         #Creates the message manager, for sendind and reciving messages
         self.message_manager = MessageManager(self.sock)
@@ -375,7 +384,7 @@ class Broker:
                 if worker.missed_keep_alives >= KEEP_ALIVE_TOLERANCE:
                     worker.kill()
 
-                    self.put_outout_history(f"Worker {worker.id} deemed dead.")
+                    self.output(f"Worker {worker.id} deemed dead.")
                     self.assign_task() #Try to assign it again
                 else:
                     self.message_manager.send(worker.addr, KeepAliveMessage())
@@ -385,11 +394,12 @@ class Broker:
                     denied = worker.task.missed_confirm()
                     
                     if denied:
-                        self.put_outout_history(f"Worker {worker.id} missed it's job assignment.")
+                        self.output(f"Worker {worker.id} missed it's job assignment.")
                         self.assign_task() #Try to assign it again
 
             #Update interfaces
-            self.print_interface()
+            if self.format_output:
+                self.print_interface()
 
             #Wait ten seconds
             time.sleep(KEEP_ALIVE_DELAY)
@@ -425,7 +435,7 @@ class Broker:
         self.message_manager.send(addr, HelloMessage(id)) #Gives the worker it's ID
 
         #Update the interface
-        self.put_outout_history(f"Worker {id} just joined.")
+        self.output(f"Worker {id} just joined.")
 
         #Gives it a task if needed
         self.assign_task()
@@ -461,14 +471,14 @@ class Broker:
 
     #Receives the result of an operation from a worker
     def handle_operation_reply(self, msg : OperationReplyMessage, addr):
-        #Sends a confirmation that it received the task
-        self.message_manager.send(addr, TaskConfimationMessage())
-
         #It can be either a list or int
         if type(msg.id) == list:
             task_id = msg.id[0]
         else:
             task_id = msg.id
+
+        #Sends a confirmation that it received the task
+        self.message_manager.send(addr, TaskConfimationMessage())
 
         #Ignore responses for tasks that are already completed
         if task_id in Task.history.keys():
@@ -478,7 +488,7 @@ class Broker:
 
         #Only accept tasks from the worker assigned to it
         if task_id not in Task.current_tasks.keys() or Task.current_tasks[task_id].worker != worker:
-            self.put_outout_history(f"Alert: Worker {worker.id} sent in a task that was not assigned to it.")  
+            self.output(f"Alert: Worker {worker.id} sent in a task that was not assigned to it.")  
             return
 
         #Flags that the worker is done with their operation
@@ -503,7 +513,7 @@ class Broker:
         task_id = request.data["task_id"]
         Task.current_tasks[task_id].images[0].update_image_resized(str.encode(request.image_base64))
 
-        self.put_outout_history(f"Worker {request.worker} is done resizing.")
+        self.output(f"Worker {request.worker} is done resizing.")
 
         #See if there's a new task for the worker
         self.assign_task()
@@ -522,9 +532,9 @@ class Broker:
             #Merges the two images
             ImageWrapper.merge([A_img, B_img], request.image_base64)
 
-            self.put_outout_history(f"Worker {request.worker} is done merging.")
+            self.output(f"Worker {request.worker} is done merging.")
         except:
-            self.put_outout_history("UWU")
+            self.output("UWU")
             pass
         #See if there's a new task for the worker
         self.assign_task()
@@ -558,11 +568,10 @@ class Broker:
                 task : Task = Task.register("RESIZE", [img], worker)
 
                 #Sends the command to the worker
-                print("sending " +str(task.id))
                 msg = ResizeRequestMessage(task.id,img.fragment_count(), self.height)
                 self.message_manager.send(worker.addr, msg)
 
-                self.put_outout_history(f"Assinging worker {worker.id} to resize {img.name}.")
+                self.output(f"Assinging worker {worker.id} to resize {img.name}.")
             #Look for terminal nodes
             else:
                 A_image : ImageWrapper = img.get_terminal_images()
@@ -580,7 +589,7 @@ class Broker:
                     msg = MergeRequestMessage(task.id, (A_image.fragment_count(), B_image.fragment_count()))
                     self.message_manager.send(worker.addr, msg)
 
-                    self.put_outout_history(f"Assinging worker {worker.id} to merge two images.")
+                    self.output(f"Assinging worker {worker.id} to merge two images.")
 
 
     #Returns a list of all workers without tasks
@@ -684,10 +693,11 @@ class Broker:
 
             task_count = "(Did no tasks)"
             if w in workers.keys():
-                task_count = f"({workers[w]} task(s))"
+                task_count = f"( {workers[w]} task(s) )"
 
             print(f'{str(w.id)}.\t{(w.addr[0]+":"+str(w.addr[1]))} {task_count}')
-        print("\n*Not every worker was necessarily alive up until the end.")  
+        print(f"\n*{WorkerInfo.dead_worker_count} worker(s) died during the proccess.")
+        print("*Not every worker was necessarily alive up until the end.")  
 
         print("\nALL TASKS:\n"+"-"*50)  
         for t in reversed(Task.history.values()):
@@ -707,8 +717,8 @@ class Broker:
 
     #Helper method for the output history queue
     OUTPUT_QUEUE_LENGTH = 20    
-    output = ['...' for i in range(0,OUTPUT_QUEUE_LENGTH)]
-    def put_outout_history(self, value : str):
+    output_history = ['...' for i in range(0,OUTPUT_QUEUE_LENGTH)]
+    def output(self, value : str):
 
         #Get the current time for timestamp
         curr_time = datetime.now()
@@ -718,14 +728,18 @@ class Broker:
         value = "{:10s} {}".format(time, value)
         for i in reversed(range(0, self.OUTPUT_QUEUE_LENGTH)):
             if i == 0:
-                self.output[i] = value
+                self.output_history[i] = value
             else:
-                self.output[i] = self.output[i-1]
-        self.print_interface()
+                self.output_history[i] = self.output_history[i-1]
+
+        #Prints as an interface or not, depending on args
+        if self.format_output:
+            self.print_interface()
+        else:
+            print(value)
 
     #Prints the interface
     def print_interface(self) -> None:
-        #return
         os.system("cls||clear") #Clears on both windows and linux
 
         #Broker info
@@ -755,7 +769,7 @@ class Broker:
 
         #Output window
         print("\nOUTPUT\n"+"-"*50)
-        print("\n".join(self.output))
+        print("\n".join(self.output_history))
         pass
 
 #endregion
