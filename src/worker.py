@@ -209,7 +209,6 @@ class Worker:
         self.output("Received a resize operation request. Resizing...")
 
         #Sends a confirmation that it received the task
-        #TODO: Colocar id da tarefa na confirmation?
         self.message_manager.send(self.broker_sock, TaskConfimationMessage())
 
         #Invokes merge callback when the image is reconstructed
@@ -393,13 +392,16 @@ class Worker:
             else:
             #Freeze
                 self.output("Sleeping for an infinite amount of time to simulate freezing")
+                self.status = "FROZEN"
+                if self.format_output:
+                    self.print_interface()
+
                 while True:
                     time.sleep(1)
-
-            pass
         #Delay
         else:
             delay_time = random.uniform(self.MIN_SLEEP, self.MAX_SLEEP)
             self.output("Sleeping for {:.1f} seconds to simulate hangs.".format(delay_time))
+            if self.format_output:
+                self.print_interface()
             time.sleep(delay_time)
-            pass

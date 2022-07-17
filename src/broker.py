@@ -1,4 +1,3 @@
-from heapq import merge
 import os #For managing files
 import errno #For error handling
 
@@ -61,7 +60,8 @@ class ImageWrapper:
     def update_image_resized(self, new_image : str):
         self.resized = True
         self.image_encoded = new_image
-        self.task.complete()
+        if self.task != None:
+            self.task.complete()
 
     #Gets the number of fragments this image has
     def fragment_count(self):
@@ -507,10 +507,6 @@ class Broker:
             self.output(f"Alert: Worker {worker.id} sent in a task that was not assigned to it.")  
             return
 
-        #TODO
-        #Flags that the worker is done with their operation
-        #worker.task.complete()
-
         task = Task.current_tasks[task_id]
 
         #If it was a resize...
@@ -733,17 +729,22 @@ class Broker:
 
             print(f'{str(w.id)}.\t{(w.addr[0]+":"+str(w.addr[1]))} {task_count}')
         print(f"\n*{WorkerInfo.dead_worker_count} worker(s) died during the proccess.")
-        print("*Not every worker was necessarily alive up until the end.")  
+        print("*Not every worker was necessarily alive up until the end. Not every task was accepted.")  
 
         print("\nALL TASKS:\n"+"-"*50)  
         for t in Task.history.values():
             print(t)   
         print("\n*Tasks given but not finished by the worker are not listed.")  
 
-        #Opens the final image and saves to disk
+        #Opens the final image and saves to disk 
+        file_name = f"collage_{datetime.now().strftime('%Y-%m-%d-%H:%M')}.jpeg"
+        file_path = os.path.join(self.path, file_name)
+
         final_image = ImageWrapper.decode(self.images[0].get_terminal_image().get_encoded())
         final_image.show()
+        final_image.save(file_path)
         print("\nOpening and saving the final image to disk.")  
+        print(f"Saved image at {file_path}")
 
         #Power off and tells workers to power off too
         print("\nPowering down...")  

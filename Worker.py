@@ -1,6 +1,9 @@
 from src.worker import Worker #The actual woker implementation
 import argparse #For parsing command line arguments
 
+def CreateWorker(port : int, address : str, simulate : bool, min : int, max : int, fail : float, format_output : bool) -> Worker:
+    return Worker(port, address, simulate, min, max, fail, format_output)
+
 #Creates the broker. Receives a image path and desired height as arguments.
 if __name__ == "__main__":
 
@@ -44,4 +47,4 @@ if __name__ == "__main__":
     if args.fail != None and (args.fail > 1 or args.fail < 0):
         parser.error("the failure rate must be between 0.0 and 1.0")
 
-    Worker(args.port, args.address, args.s, args.min, args.max, args.fail, args.ui)
+    CreateWorker(args.port, args.address, args.s, args.min, args.max, args.fail, args.ui)

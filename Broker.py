@@ -2,6 +2,10 @@ from src.broker import Broker #The actual broker implementation
 import argparse #For parsing command line arguments
 
 #Creates the broker. Receives a image path and desired height as arguments.
+def CreateBroker(path : str, height : int, format_output : bool) -> Broker:
+    return Broker(path, height, format_output)
+
+#Parses arguments
 if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(description="broker for the distributed image merger by bruno rocha moura")
@@ -19,4 +23,5 @@ if __name__ == "__main__":
 
     if args.height <= 0:
         parser.error("the desired height must be greater than zero")
-    Broker(args.path, args.height, args.ui)
+
+    CreateBroker(args.path, args.height, args.ui)
