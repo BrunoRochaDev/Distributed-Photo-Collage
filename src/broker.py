@@ -570,12 +570,9 @@ class Broker:
             if len(idle_workers) == 0:
                 break
 
-            #Ignore images that are already taken
-            if img.task != None:
-                continue
-
             #Resize if needed
-            if not img.resized:
+            #Ignore images that are already taken
+            if not img.resized and img.task == None:
                 #Assign a worker to it
                 worker : WorkerInfo = idle_workers.pop()
 
@@ -596,11 +593,14 @@ class Broker:
         for index, img in enumerate(terminal_images):
             img : ImageWrapper
 
+            if index + 1 > self.image_count:
+                continue
+
             if img.task != None or len(idle_workers) == 0:
                 break
             
             A_image : ImageWrapper = img.get_terminal_image()
-            B_image : ImageWrapper = terminal_images[(index + 1) % len(terminal_images)].get_terminal_image()
+            B_image : ImageWrapper = terminal_images[index + 1].get_terminal_image()
 
             #If it is also resized, then merge
             if B_image != A_image and B_image.resized:
