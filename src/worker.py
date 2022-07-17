@@ -122,6 +122,10 @@ class Worker:
         self.message_manager.send(self.broker_sock, HelloMessage())
         self.output(f"Attemping to connect to broker {self.broker_sock}...")
 
+        #Update interface
+        if self.format_output:
+            self.print_interface()
+
 
     #Wait for commands from the broker
     def run(self):
@@ -227,8 +231,12 @@ class Worker:
         new_width = math.ceil(desired_height * ratio)
         new_height = math.ceil(desired_height)
 
-        #Resizes the image and stores it in the image dict
-        PIL_image = PIL_image.resize((new_width, new_height))
+        #Try to resize the image, sometimes "mage file is truncated" is thrown
+        try:
+            #Resizes the image and stores it in the image dict
+            PIL_image = PIL_image.resize((new_width, new_height))
+        except:
+            self.output("An error occured while resizing. Potential data corruption")
 
         #Either hangs, crashes or freezes if failure simulation is on
         if self.simulate_failure:

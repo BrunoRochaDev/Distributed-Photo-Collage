@@ -274,6 +274,8 @@ class Broker:
     #List of every worker (and info about them)
     workers = {}
 
+    start_time = None
+
     #Only constructor. Takes two arguments:
     #   1. The path to the images folder
     #   2. The height of the merged image should have
@@ -564,8 +566,13 @@ class Broker:
         for img in self.images: 
             img : ImageWrapper
 
-            if img.task != None or len(idle_workers) == 0:
+            #Dont bother if there are no free workers
+            if len(idle_workers) == 0:
                 break
+
+            #Ignore images that are already taken
+            if img.task != None:
+                continue
 
             #Resize if needed
             if not img.resized:
@@ -765,6 +772,11 @@ class Broker:
         print("BROKER\n"+"-"*50)  
         print(f"Address: {socket.gethostname()}")
         print("Port: 1024")
+
+        if self.start_time != None:
+            hours, remainder = divmod((datetime.now() - self.start_time).total_seconds(), 3600)
+            minutes, seconds = divmod(remainder, 60)
+            print("Elapsed time: {:02}:{:02}:{:02}".format(int(hours), int(minutes), int(seconds)))
 
         #Image window
         print("\nIMAGES")
