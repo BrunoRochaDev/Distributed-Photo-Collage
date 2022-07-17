@@ -61,6 +61,7 @@ class ImageWrapper:
     def update_image_resized(self, new_image : str):
         self.resized = True
         self.image_encoded = new_image
+        self.task.complete()
 
     #Gets the number of fragments this image has
     def fragment_count(self):
@@ -88,6 +89,8 @@ class ImageWrapper:
 
         for img in images:
             img.merged = merged_image
+            if img.task:
+                img.task.complete()
 
     #Recursivaly finds terminal image
     def get_terminal_image(self) -> object:
@@ -210,6 +213,8 @@ class Task:
 
     def denied(self):
         self.confirmed = False
+
+        #Frees the workers and images
         self.worker.assign_task(None)
         for img in self.images:
             img.task = None
@@ -502,8 +507,9 @@ class Broker:
             self.output(f"Alert: Worker {worker.id} sent in a task that was not assigned to it.")  
             return
 
+        #TODO
         #Flags that the worker is done with their operation
-        worker.task.complete()
+        #worker.task.complete()
 
         task = Task.current_tasks[task_id]
 
@@ -570,6 +576,10 @@ class Broker:
             if len(idle_workers) == 0:
                 break
 
+            #Look for terminal merge
+            if img not in terminal_images:
+                terminal_images.append( img.get_terminal_image() )
+
             #Resize if needed
             #Ignore images that are already taken
             if not img.resized and img.task == None:
@@ -584,23 +594,21 @@ class Broker:
                 self.message_manager.send(worker.addr, msg)
 
                 self.output(f"Assinging worker {worker.id} to resize '{img.get_name()}'.")
-            #Look for terminal merge
-            else:
-                if img not in terminal_images:
-                    terminal_images.append( img.get_terminal_image() )
 
         #Find terminal images to merge
-        for index, img in enumerate(terminal_images):
-            img : ImageWrapper
+        for index, A_image in enumerate(terminal_images):
+            A_image : ImageWrapper
 
-            if index + 1 > self.image_count:
+            if index + 1 >= self.image_count:
                 continue
 
-            if img.task != None or len(idle_workers) == 0:
+            if len(idle_workers) == 0:
                 break
             
-            A_image : ImageWrapper = img.get_terminal_image()
-            B_image : ImageWrapper = terminal_images[index + 1].get_terminal_image()
+            B_image : ImageWrapper = terminal_images[index + 1]
+
+            if A_image.task != None or B_image.task != None:
+                continue
 
             #If it is also resized, then merge
             if B_image != A_image and B_image.resized:
@@ -613,9 +621,8 @@ class Broker:
                 #Asks a worker to merge it
                 msg = MergeRequestMessage(task.id, (A_image.fragment_count(), B_image.fragment_count()))
                 self.message_manager.send(worker.addr, msg)
-                if worker.id == 1:
-                    self.output(f"Assigning worker {worker.id} to merge '{A_image.get_name()}' and '{B_image.get_name()}'.")
 
+                self.output(f"Assigning worker {worker.id} to merge '{A_image.get_name()}' and '{B_image.get_name()}'.")
 
     #Returns a list of all workers without tasks
     def get_idle_workers(self) -> list:
