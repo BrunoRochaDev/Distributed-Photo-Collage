@@ -90,11 +90,11 @@ class ImageWrapper:
             img.merged = merged_image
 
     #Recursivaly finds terminal image
-    def get_terminal_images(self) -> object:
+    def get_terminal_image(self) -> object:
         if self.merged == None:
             return self
         else:
-            return self.merged.get_terminal_images()
+            return self.merged.get_terminal_image()
 
     #Convert Image to Base64 
     @classmethod
@@ -552,7 +552,7 @@ class Broker:
     def assign_task(self):
 
         #If all the images are merged...
-        if all([x.merged != None for x in self.images]):
+        if all([x.get_terminal_image() == self.images[0].get_terminal_image() for x in self.images]):
             #All tasks were done. All finished!
             self.done()
 
@@ -590,7 +590,7 @@ class Broker:
             #Look for terminal merge
             else:
                 if img not in terminal_images:
-                    terminal_images.append( img.get_terminal_images() )
+                    terminal_images.append( img.get_terminal_image() )
 
         #Find terminal images to merge
         for index, img in enumerate(terminal_images):
@@ -599,8 +599,8 @@ class Broker:
             if img.task != None or len(idle_workers) == 0:
                 break
             
-            A_image : ImageWrapper = img.get_terminal_images()
-            B_image : ImageWrapper = terminal_images[(index + 1) % len(terminal_images)].get_terminal_images()
+            A_image : ImageWrapper = img.get_terminal_image()
+            B_image : ImageWrapper = terminal_images[(index + 1) % len(terminal_images)].get_terminal_image()
 
             #If it is also resized, then merge
             if B_image != A_image and B_image.resized:
@@ -734,7 +734,7 @@ class Broker:
         print("\n*Tasks given but not finished by the worker are not listed.")  
 
         #Opens the final image and saves to disk
-        final_image = ImageWrapper.decode(self.images[0].get_encoded())
+        final_image = ImageWrapper.decode(self.images[0].get_terminal_image().get_encoded())
         final_image.show()
         print("\nOpening and saving the final image to disk.")  
 
