@@ -102,7 +102,6 @@ class FragmentReplyMessage(Message):
         self.data = data
         self.piece = piece
 
-
 #Message sent by the broker saying that the workers should powerdown
 class DoneMessage(Message):
     def __init__(self) -> None:
