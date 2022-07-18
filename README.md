@@ -102,7 +102,7 @@ Para avaliar a performance do sistema em função do número de imagens e de *wo
 500 Imagens     | 00:02:25 | 00:00:45
 1000 Imagens    | 00:06:50 | 00:02:01
 <p align="center">
-<img src="https://github.com/detiuaveiro/cd2022-recurso-97151-brunorocha-projetomelhoria/blob/main/imagens_relatorio/Experimento.png" alt="" width="500"/>
+<img src="https://github.com/detiuaveiro/cd2022-recurso-97151-brunorocha-projetomelhoria/blob/main/imagens_relatorio/Experimento.png" alt="" width="800"/>
 </p>
 <p align="center">Fig4. - Performance do sistema.</p>
 
