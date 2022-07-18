@@ -22,8 +22,8 @@ from .message_manager import ImageRequest, MessageManager
 from .protocol import *
 
 #Keep alive stats
-KEEP_ALIVE_DELAY = 1
-KEEP_ALIVE_TOLERANCE = 6
+KEEP_ALIVE_DELAY = 0.1
+KEEP_ALIVE_TOLERANCE = 60
 TASK_CONFIRM_TOLERANCE = 3
 
 #Wrapper class for holding image data for ease of access

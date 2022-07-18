@@ -206,7 +206,7 @@ class Worker:
             return
 
         self.status = "RESIZING"
-        self.output("Received a resize operation request. Resizing...")
+        self.output("Received a resize operation request. Reconstructing image...")
 
         #Sends a confirmation that it received the task
         self.message_manager.send(self.broker_sock, TaskConfimationMessage())
@@ -217,6 +217,7 @@ class Worker:
 
     #Invoked when all the fragments of the image is collected and the image is constructed
     def resize_callback(self, request : ImageRequest):
+        self.output("Reconstructed the image. Resizing...")
 
         #Gets the desired height from the request
         desired_height = request.data["desired_height"]
@@ -257,7 +258,7 @@ class Worker:
             return
 
         self.status = "MERGING"
-        self.output("Received a merge operation request. Merging...")
+        self.output("Received a merge operation request. Reconstructing images...")
 
         #Sends a confirmation that it received the task
         self.message_manager.send(self.broker_sock, TaskConfimationMessage())
@@ -272,6 +273,7 @@ class Worker:
     #Invoked when all the fragments of the image is collected and the image is constructed
     #Waits until both images were reconstructed to merge it
     def merge_callback(self, request : ImageRequest):
+
         #Reconstruct the image...
         if request.id[1] == 0:
            self.A_image = ImageWrapper.decode(request.image_base64)
@@ -285,6 +287,8 @@ class Worker:
 
     #Finally merges after both images have been reconstructed
     def merge(self, request : ImageRequest):
+        self.output("Reconstructed the images. Merging...")
+
         #Merges the images
         A_image_size = self.A_image.size
         B_image_size = self.B_image.size
@@ -357,7 +361,7 @@ class Worker:
 
         #Prints as an interface or not, depending on args
         if not self.format_output:
-            self.print_interface()
+            print(value)
 
     #Prints the interface
     def print_interface(self) -> None:
