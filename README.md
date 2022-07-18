@@ -90,3 +90,22 @@ Quando um processo recebe uma mensagem de pedido de um fragmento, é responsabil
 
 ### *Done* 
 Uma simples mensagem enviada para os *workers* quando o *broker* é desligado, informando-os que podem se desligar também.
+
+## Resultados
+
+Para avaliar a performance do sistema em função do número de imagens e de *workers* trabalhando em simultâneo, foi realizado um simples experimento:
+
+.               | 1 Worker | 4 Workers
+---             | --- | ---
+50 Imagens      | 00:00:11 | 00:00:05
+100 Imagens     | 00:00:22 | 00:00:08
+500 Imagens     | 00:02:25 | 00:00:45
+1000 Imagens    | 00:06:50 | 00:02:01
+<p align="center">
+<img src="https://github.com/detiuaveiro/cd2022-recurso-97151-brunorocha-projetomelhoria/blob/main/imagens_relatorio/Experimento.png" alt="" width="500"/>
+</p>
+<p align="center">Fig4. - Performance do sistema.</p>
+
+Todos os experimentos foram feitos com as imagens disponibilizadas pelo professor e escolhidas arbitráriamente. Todas as corridas foram feitas no mesmo computador e com parâmetros de execução idênticos (mesma altura final, tempo máximo para confirmação de tarefas, sem simulação de falhas, etc.)
+
+Nota-se que o fator que mais afeta o tempo de execução é o tempo máximo para aceitação de uma tarefa. Portanto, deve-se se escolher o menor tempo de aceitação possível que a configuração da rede permite para assegurar a melhor performance.
