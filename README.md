@@ -10,8 +10,9 @@ Como motivação, nos foi proposta a implementação de um sistema distribuído 
 
 A arquitetura do sistema deve ser baseada no algoritmo Map-Reduce, onde um processo Broker delega tarefas à processos Worker de forma que o trabalho computacional é distribuído entre os diferentes nós.
 
-#IMAGEM DO RELATORIO AQUI
-
+<p align="center">
+<img src="https://github.com/detiuaveiro/cd2022-recurso-97151-brunorocha-projetomelhoria/blob/main/imagens_relatorio/Inicial.png" alt="" width="500"/>
+</p>
 <p align="center">
 Fig1. - Ilustração fornecida pelo guião de motivação
 </p>
@@ -41,15 +42,16 @@ Esse mecanismo de controle acabou por ser o maior *bottleneck* do sistema, mas e
 
 Para contornar a limitação para o tamanho de pacotes, foi implementado um mecanismo para o pedido, envio e recessão de imagens. O conteúdo de cada imagem do sistema é dividido em fragmentos, cada um dos quais tem tamanho inferior à um limite estabelecido. Quando um processo quer anunciar a existência de uma imagem, este envia uma mensagem de anúncio que contém o identificador da imagem e sua quantidade de fragmentos. O processo recessor então envia mensagens de pedido para um fragmento em específico que são correspondidas por mensagens de resposta até o processo recessor ter todos os fragmentos necessessários para a reconstrução da imagem. Como é possível que pacotes se percam, pode demorar mais de uma tentativa para conseguir todos os fragmentos.
 
-#IMAGEM AQUI
-
+<p align="center">
+<img src="https://github.com/detiuaveiro/cd2022-recurso-97151-brunorocha-projetomelhoria/blob/main/imagens_relatorio/Fragments.png" alt="" width="800"/>
+</p>
 <p align="center">
 Fig2. - Ilustração do processo de resolução de fragmentos
 </p>
 
 A estrutura de dados para armazenamento de imagem é uma árvore binária, onde as folhas são as imagens inicias que são populadas primeiro. Para cada passo intermediário no processo do sistema, novas imagens são inseridas na árvore. O processo de união entre as imagens só acontece entre as mais superficiais no momento da operação que são vizinhas. O processo acaba quando a imagem raiz é criada.
 
-#IMAGEM AQUI
 <p align="center">
-Fig3. - Ilustração da árvore de imagens durante o processo. Imagens elegíveis para união tem uma borda preta.
+<img src="https://github.com/detiuaveiro/cd2022-recurso-97151-brunorocha-projetomelhoria/blob/main/imagens_relatorio/Tree.png" alt="" width="500"/>
 </p>
+<p align="center">Fig3. - Ilustração da árvore de imagens durante o processo. Imagens elegíveis para união tem bordas preta.</p>
