@@ -1,6 +1,7 @@
 # Distributed Photo Collage
 ## Relatório do Trabalho de Melhoria
 Bruno Rocha Moura — 97151
+Nota: Este trabalho recebeu 18 valores de um total de 20
 
 ## Introdução
 
