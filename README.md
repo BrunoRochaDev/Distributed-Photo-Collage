@@ -26,7 +26,7 @@ Por último, mais uma restrição é que a comunicação entre os processos deve
 
 ## Problemas Iniciais
 
-A maioria das complicações no desenvolvimento do sistema foram decorreram protocolo de comunicação UDP. Por ser um protocolo *Fire-and-Forget*, não há garantias que mensagens enviadas chegarão no seu destino ou em que ordem.
+A maioria das complicações no desenvolvimento do sistema decorreram do protocolo de comunicação UDP. Por ser um protocolo *Fire-and-Forget*, não há garantias que mensagens enviadas chegarão no seu destino ou em que ordem.
 
 Isso gera problemas quanto à atribuição de tarefas. Por exemplo, a situação onde um *broker* atribui uma tarefa a um *worker*, mas a mensagem se perdide no caminho. Na ausência de algum mecanismo de controle, o *broker* não atribuíria essa tarefa para nenhum outro *worker* (pois ele acredita que já tem alguém realizando-a) e o *worker* não só não a realizaria (pois não recebeu a mensagem) como também não receberia nenhuma outra (o *broker* não delega tarefas para *worker*s com tarefas pendentes). Dessa forma, a tarefa jamais seria concluída e o *worker* permaneceria ociosos dali em diante.
 
